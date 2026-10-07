@@ -27,10 +27,13 @@ jobs:
           cache: pip
 
       - name: 装依赖
-        run: pip install -r requirements.txt pyinstaller
+        run: python -X utf8 -m pip install -r requirements.txt pyinstaller
+
+      - name: 验证接口与密钥隔离
+        run: python -X utf8 -m unittest discover -s tests -v
 
       - name: 打包
-        run: pyinstaller --noconfirm --clean jev.spec
+        run: python -X utf8 -m PyInstaller --noconfirm --clean jev.spec
 
       - name: 压 zip（tag 用 tag 名，手动触发用短 SHA）
         id: pack
@@ -40,7 +43,7 @@ jobs:
           if (-not (Test-Path $exe)) { throw "exe 没生成：$exe" }
           $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA.Substring(0, 7) }
           $zip = "jev-chat-windows-$ver.zip"
-          Copy-Item -Path LICENSE, NOTICE -Destination 'dist\jev-chat-windows'
+          Copy-Item -Path LICENSE, NOTICE, README.md -Destination 'dist\jev-chat-windows'
           Compress-Archive -Path 'dist\jev-chat-windows' -DestinationPath $zip
           Add-Content -Path $env:GITHUB_OUTPUT -Value "zip=$zip"
           "{0}  {1:N1} MB" -f $zip, ((Get-Item $zip).Length / 1MB)
@@ -58,5 +61,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ steps.pack.outputs.zip }}
-          body: ""
+          body_path: docs/releases/${{ github.ref_name }}.md
+          draft: true
           generate_release_notes: false

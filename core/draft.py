@@ -12,11 +12,11 @@ import re
 try:  # 当模块导入 / 当脚本直接跑 都能用
     from .jev_client import JevError, _api_key  # 复用 key 读取
     from .llm import chat
-    from .providers import DRAFT_PROVIDERS, LLM_ENV
+    from .providers import DRAFT_PROVIDERS, key_env
 except ImportError:
     from jev_client import JevError, _api_key
     from llm import chat
-    from providers import DRAFT_PROVIDERS, LLM_ENV
+    from providers import DRAFT_PROVIDERS, key_env
 
 # 思考模式：V4.1 Flash 默认**开着**（effort=high，max_tokens 64K）——起草三句聊天回复用不上，慢还贵，
 # 默认一律关；设置里开了才让模型先想再写（draft_candidates 的 thinking 参数，各家的额外字段在表里）。
@@ -187,7 +187,7 @@ def draft_candidates(messages: list, relationship: str, provider: str = "deepsee
     if guidance and guidance.strip():
         user += f"\n\n{guidance.strip()}"
     user += "\n\n输出恰好 3 条候选，JSON 数组，每条一句。"
-    key = _api_key(LLM_ENV)  # 起草只有这一把 key，换来源不用重填
+    key = _api_key(key_env(provider, "draft"))
     # 1.2：DeepSeek 自己推荐的闲聊档位，0.8 出来的话太板正
     # max_tokens：三句话本来 400 够，但思考过程也算进 max_tokens，开了思考模式 400 会把答案截断
     call = lambda turns: chat(  # noqa: E731 —— 三个参数会变，其余每次都一样

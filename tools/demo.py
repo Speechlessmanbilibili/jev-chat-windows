@@ -1,16 +1,8 @@
 # -*- coding: utf-8 -*-
-"""端到端冒烟：截图里那段真实对话跑一遍完整链，打印判断 + 排好序的候选。
+"""用合成对话验证判断、起草和排序，打印结果。
 
-链路是三段式：Jev 判断（7 道题） → 带着判断起草 3 条 → Jev 排序，两次 Jev 调用。
-
-全程只要两把 key：判断一把 JEV_API_KEY（OpenRouter 或 TypeSafe 的），起草一把 LLM_API_KEY。
-
-    set JEV_API_KEY=...   &  set LLM_API_KEY=...    (Windows)
-    export JEV_API_KEY=... && export LLM_API_KEY=...(mac/Linux)
-    python tools/demo.py
-
-默认：判断走 OpenRouter，起草走 DeepSeek 官网直连。换别家改下面两个常量
-（可选的来源见 core/providers.py 的两张表）。
+默认使用 OpenAI Decisions 判断、DeepSeek 起草，需设置 OPENAI_API_KEY 和 LLM_API_KEY。
+运行：python -X utf8 -m tools.demo。调用会产生 API 用量。
 """
 from __future__ import annotations
 
@@ -32,7 +24,7 @@ MESSAGES = [
 ]
 RELATIONSHIP = "romantic partners"
 PROVIDER = "deepseek"        # 起草来源，见 core.providers.DRAFT_PROVIDERS
-JEV_PROVIDER = "openrouter"  # 判断来源：openrouter 或 typesafe
+JEV_PROVIDER = "openai"  # 判断来源：openai / openrouter / typesafe
 
 
 def fmt(name: str, ans: dict) -> str:
@@ -66,7 +58,7 @@ def main() -> int:
     if block:
         print("\n" + block)
 
-    print("\n候选（Jev 排序，★ = 推荐）:")
+    print("\n候选（判断模型排序，★ = 推荐）:")
     scores = r.get("scores")
     for i, c in enumerate(r["candidates"]):
         pct = f"  {scores[i]:.0%}" if scores else ""

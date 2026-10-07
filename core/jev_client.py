@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Jev 判断 API 客户端：OpenRouter 或 TypeSafe 直连。
+"""判断来源路由：OpenAI Decisions / OpenRouter / TypeSafe。
 
-TypeSafe 直连走官方 `typesafe_sdk`；OpenRouter 这条是唯一自己拼 HTTP 的路——
-SDK 把路径写死成 `/v1/systemone`，打不到 OpenRouter 的 `/api/alpha/decisions`。
-两条路返回同一个 dict 形状，engine 不关心跑的是哪条。key 只从环境变量读，绝不打进日志。
+各来源返回统一的答案字典。密钥从环境变量读取，错误信息经过脱敏。
 """
 
 from __future__ import annotations
@@ -18,10 +16,10 @@ from typing import NoReturn
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
     from .providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY,
-                            OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
+                            OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE, key_env)
 except ImportError:
     from providers import (ENV_VARS, JEV_ENV, JEV_PROVIDERS, LEGACY,
-                           OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE)
+                           OPENROUTER_DECISIONS, OPENROUTER_KEY_URL, TYPESAFE_BASE, key_env)
 
 MAX_RETRIES = 3
 
@@ -66,7 +64,7 @@ def _fail(exc: Exception, what: str) -> NoReturn:
 
 
 def _api_key(env: str = JEV_ENV) -> str:
-    """两把 key 之一（JEV_API_KEY / LLM_API_KEY）。新名字空着就退回老名字，老用户不用重填。"""
+    """读取指定密钥变量；原有判断和起草变量兼容旧名称。"""
     key = ((os.environ.get(env) or "").strip()
            or (os.environ.get(LEGACY.get(env, "")) or "").strip())
     if not key:
@@ -86,15 +84,19 @@ def _error_body(exc: urllib.error.HTTPError) -> str:
 
 
 def ask(state: dict, questions: dict, timeout: float = 20,
-        provider: str = "openrouter", model: str | None = None) -> dict:
-    """问 Jev 一轮判断，返回 {"answers": {名字: 答案}, "usage": {...}}。
-
-    provider ∈ JEV_PROVIDERS（openrouter / typesafe 直连）；model=None 用该来源的默认模型。
-    两条路返回的 dict 形状一模一样，429/529 都会退避重试。绝不打印或写出 key。
-    """
-    spec = JEV_PROVIDERS.get(provider) or JEV_PROVIDERS["openrouter"]
-    key = _api_key(JEV_ENV)  # 两家共用同一把 key，换来源不用重填
+        provider: str = "openai", model: str | None = None) -> dict:
+    """执行一轮判断，返回答案字典和用量；未指定模型时使用该来源默认值。"""
+    if provider not in JEV_PROVIDERS:
+        raise JevError(f"未知判断来源：{provider}")
+    spec = JEV_PROVIDERS[provider]
+    key = _api_key(key_env(provider, "jev"))
     model = model or spec.default
+    if provider == "openai":
+        try:
+            from .openai_decisions import ask_openai
+        except ImportError:
+            from openai_decisions import ask_openai
+        return ask_openai(state, questions, key, model, timeout)
     if provider == "typesafe":
         return _ask_typesafe(state, questions, key, model, timeout)
     return _ask_openrouter(state, questions, key, model, timeout)
@@ -205,6 +207,16 @@ def _check_openrouter_key(key: str, timeout: float) -> None:
 
 def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
     """某家能用的 Jev 模型 id，去重排序。失败抛 JevError（设置页直接显示这句话）。"""
+    if provider == "openai":
+        import openai
+
+        try:
+            with openai.OpenAI(api_key=key, base_url="https://api.openai.com/v1",
+                               timeout=timeout, max_retries=1) as client:
+                client.models.retrieve(JEV_PROVIDERS["openai"].default)
+        except Exception as exc:
+            _fail(exc, "获取 Decisions 模型")
+        return [JEV_PROVIDERS["openai"].default]
     if provider == "typesafe":
         import typesafe_sdk
 
@@ -313,7 +325,7 @@ if __name__ == "__main__":
         return io.BytesIO(json.dumps(body).encode("utf-8"))
 
     with patch.object(urllib.request, "urlopen", _fake_urlopen):
-        assert ask({"chat": {}}, questions) == body
+        assert ask({"chat": {}}, questions, provider="openrouter") == body
     assert seen["url"] == OPENROUTER_DECISIONS
     assert seen["body"]["model"] == "typesafe/jev-1.13" and seen["body"]["questions"] == questions
 

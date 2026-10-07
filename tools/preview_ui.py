@@ -16,7 +16,7 @@ from unittest.mock import patch
 from app import settings
 
 
-_STATES = ("ready", "waiting", "loading", "error", "setup", "settings", "paused", "debug")
+_STATES = ("ready", "waiting", "loading", "error", "setup", "settings", "models", "paused", "debug")
 
 # 调试视图预览用的真微信截图（只读进内存，不改不存）；没有就退一张空画面
 _FRAME = Path("/private/tmp/claude-501/-Users-lpitiless-Documents-project-wechatjev"
@@ -110,11 +110,11 @@ def main() -> int:
     args = parser.parse_args()
     target = Path(args.screenshot).expanduser() if args.screenshot else None
 
-    # 演示里：判断走 OpenRouter，起草走 DeepSeek 官网；全程就两把 key，都当「已配置」
+    # 演示使用 OpenAI Decisions 判断和 DeepSeek 起草，示例密钥仅保存在内存。
     configured = "" if args.state == "setup" else "demo-key"
     demo_settings = {"relationship": "friends", "context": 10,
                      "jev_key": configured, "llm_key": configured,
-                     "jev_provider": "openrouter", "jev_model": "typesafe/jev-1.13",
+                     "jev_provider": "openai", "jev_model": "gpt-6-luna",
                      "draft_provider": "deepseek", "draft_model": "deepseek-flash",
                      "draft_base_url": "", "reply_target": True,
                      "style": "话少，基本不用标点，急了才发感叹号", "thinking": False,
@@ -144,6 +144,8 @@ def main() -> int:
 
     def fake_jev_models(provider, key, timeout=10):
         """演示不联网：给一小撮假模型，让「获取模型」按钮在本地也走得通。"""
+        if provider == "openai":
+            return ["gpt-6-luna"]
         return (["typesafe/jev-1.13"] if provider == "openrouter"
                 else ["jev-1.13.0", "jev-latest", "jev-preview"])
 
@@ -159,8 +161,8 @@ def main() -> int:
         has_key=lambda: bool(demo_settings["jev_key"]),
         has_jev_key=lambda: bool(demo_settings["jev_key"]),
         has_llm_key=lambda: bool(demo_settings["llm_key"]),
-        jev_key=lambda: demo_settings["jev_key"],
-        llm_key=lambda: demo_settings["llm_key"],
+        jev_key=lambda provider=None: demo_settings["jev_key"],
+        llm_key=lambda provider=None: demo_settings["llm_key"],
         relationship=lambda: demo_settings["relationship"],
         context=lambda: demo_settings["context"],
         jev_provider=lambda: demo_settings["jev_provider"],
@@ -209,15 +211,18 @@ def main() -> int:
             ov.set_chat(_CHAT)
             ov.show(_RESULT)
             ov.set_status("演示模式：已生成 3 条建议，点击填入仅模拟操作。", kind="success")
-            ov.set_update("9.9.9", "https://github.com/jev-chat/jev-chat-windows/releases/latest")
+            ov.set_update("9.9.9", "https://github.com/Speechlessmanbilibili/jev-chat-windows/releases/latest")
             if args.state == "loading":
                 ov.set_busy(True)
                 ov.set_status("演示模式：正在为最新消息生成建议…", kind="busy")
             elif args.state == "error":
                 ov.set_busy(True)
                 ov.set_status("演示模式：分析失败，请检查网络和密钥，等待下一条消息后重试。", kind="error")
-            elif args.state == "settings":
+            elif args.state in ("settings", "models"):
                 ov.open_settings()
+                if args.state == "models":
+                    QTimer.singleShot(100, lambda: ov.settingsPage.verticalScrollBar().setValue(
+                        ov.jev.providerBox.parentWidget().y() - 10))
             elif args.state == "paused":
                 ov.set_capture(False)
 

@@ -7,12 +7,12 @@ REM Output: dist\jev-chat-windows\jev-chat-windows.exe
 
 if not exist ".venv\Scripts\python.exe" (
     echo Creating virtualenv .venv ...
-    python -m venv .venv || goto :fail
+    python -X utf8 -m venv .venv || goto :fail
 )
 call ".venv\Scripts\activate.bat" || goto :fail
 
 echo Installing dependencies ...
-python -m pip install -r requirements.txt pyinstaller || goto :fail
+python -X utf8 -m pip install -r requirements.txt pyinstaller || goto :fail
 
 echo Building ...
 pyinstaller --noconfirm --clean jev.spec || goto :fail

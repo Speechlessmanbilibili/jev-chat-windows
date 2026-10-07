@@ -608,14 +608,13 @@ class Overlay:
         box.addWidget(_tlabel("模型", 16, "#304c3c", True))
         self._fetched = _Fetched()
         self._fetched.done.connect(self._models_fetched)
-        self.jev = self._model_group(box, "判断 · Jev", "jev", providers.JEV_PROVIDERS)
+        self.jev = self._model_group(box, "判断 · 意图与排序", "jev", providers.JEV_PROVIDERS)
         box.addWidget(self._hint(
-            "判断意图、紧张度，并给三条候选排序。两家给的是同一个 Jev，必填。"
+            "判断意图、紧张度，并为候选回复排序。默认使用 OpenAI Decisions。"
         ))
         self.draft = self._model_group(box, "起草 · 语言模型", "draft", providers.DRAFT_PROVIDERS)
         box.addWidget(self._hint(
-            "写那三条候选。OpenAI / Anthropic / Gemini 三种接口都走各自官方 SDK。"
-            "默认 DeepSeek 官网直连，国内最快。"
+            "生成候选回复，默认使用 DeepSeek。起草密钥独立保存在 LLM_API_KEY。"
         ))
         think_row = QHBoxLayout()
         think_row.addWidget(_tlabel("起草时开启思考模式", 13), 1)
@@ -656,8 +655,7 @@ class Overlay:
         """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。"""
         group = SimpleNamespace(kind=kind, table=table, ids=list(table),
                                 keyTitle="判断" if kind == "jev" else "起草",
-                                stored_key=lambda k=kind: (settings.jev_key() if k == "jev"
-                                                           else settings.llm_key()))
+                                stored_key=lambda: "")
         heading = QHBoxLayout()
         heading.addWidget(_tlabel(title, 14, "#304c3c", True), 1)
         group.keyState = _label("", 12, _GREEN)
@@ -688,8 +686,8 @@ class Overlay:
         group.keyEdit.returnPressed.connect(self._save)
         box.addWidget(group.keyEdit)
         box.addWidget(self._hint(
-            "OpenRouter 的 key 或 TypeSafe 的 key，看上面选的来源。" if kind == "jev"
-            else "上面选哪家就填哪家的 key；换来源重填一次，只存这一把。"))
+            "OpenAI 使用 OPENAI_API_KEY，可直接读取已设置的环境变量；其他判断来源使用 JEV_API_KEY。" if kind == "jev"
+            else "填写起草来源的密钥，保存至 LLM_API_KEY；也可在环境变量中预先设置。"))
         model_label = _tlabel("模型", 13)
         box.addWidget(model_label)
         row = QHBoxLayout()
@@ -707,6 +705,8 @@ class Overlay:
         group.status = _label("", 12, _MUTED)
         box.addWidget(group.status)
         group.providerBox.currentIndexChanged.connect(lambda _: self._provider_changed(group))
+        group.stored_key = lambda: (settings.jev_key(self._provider_of(group)) if kind == "jev"
+                                    else settings.llm_key(self._provider_of(group)))
         return group
 
     @staticmethod
@@ -719,6 +719,7 @@ class Overlay:
         saved = settings.jev_provider() if group.kind == "jev" else settings.draft_provider()
         stored = settings.jev_model() if group.kind == "jev" else settings.draft_model()
         group.modelBox.clear()
+        group.keyEdit.clear()
         group.modelBox.setText(stored if provider == saved else group.table[provider].default)
         bind(group.status, "", "setText")
         self._sync_model_fields()

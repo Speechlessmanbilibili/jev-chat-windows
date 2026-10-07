@@ -2,7 +2,7 @@
 """设置持久化。key 硬约束（docs/KICKOFF.md #6）：只进环境变量，绝不落文件；其余设置落 config.json。
 
 key 的持久化走 Windows 用户环境变量（注册表 HKCU\\Environment，跟 setx 写的是同一个地方）。
-全程只有两把：判断 JEV_API_KEY、起草 LLM_API_KEY，跟选哪家来源无关。
+OpenAI 判断使用 OPENAI_API_KEY，其他判断使用 JEV_API_KEY；起草独立使用 LLM_API_KEY。
 读的时候先看进程环境，没有就直接读注册表——IDE 启动时把环境快照拿走了，之后再 Run 继承的还是旧环境，
 只靠 os.environ 会「保存了下次打开还是没有」。"""
 from __future__ import annotations
@@ -12,14 +12,14 @@ import json
 import os
 import sys  # 只为下面这一处：打包后 __file__ 指向临时解包目录，config.json 得放在 exe 旁边才存得住
 
-from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_ENV, JEV_PROVIDERS, LEGACY, LLM_ENV
+from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_PROVIDERS, LEGACY, key_env
 
 _ROOT = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
          else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _CONFIG = os.path.join(_ROOT, "config.json")
 _DEFAULT_RELATIONSHIP = "romantic partners"
 _DEFAULT_CONTEXT = 10
-_DEFAULT_JEV = "openrouter"
+_DEFAULT_JEV = "openai"
 _DEFAULT_DRAFT = "deepseek"
 
 
@@ -52,7 +52,7 @@ def language() -> str:
     return str(_read("lang") or "zh").strip().lower()
 
 def jev_provider() -> str:
-    """判断模型走哪家：openrouter（默认）或 typesafe 直连。"""
+    """判断来源；新配置默认使用 OpenAI Decisions。"""
     v = _read("jev_provider")
     return v if v in JEV_PROVIDERS else _DEFAULT_JEV
 
@@ -109,7 +109,7 @@ def _read_env(env_name: str) -> str:
 
 def _get_key(env_name: str) -> str:
     """两把 key 之一。新名字空着就退回老版本按来源存的变量（下次保存会抄进新名字）。"""
-    return _read_env(env_name) or _read_env(LEGACY[env_name])
+    return _read_env(env_name) or (_read_env(LEGACY[env_name]) if env_name in LEGACY else "")
 
 def _set_key(env_name: str, value: str) -> None:
     """只写进程环境 + HKCU\\Environment，不写任何文件。"""
@@ -135,16 +135,16 @@ def _notify_env() -> None:
     except Exception:
         pass
 
-def jev_key() -> str:
-    """判断那把 key，两家来源共用。"""
-    return _get_key(JEV_ENV)
+def jev_key(provider: str | None = None) -> str:
+    """按当前或指定判断来源读取密钥。"""
+    return _get_key(key_env(provider or jev_provider(), "jev"))
 
 def has_jev_key() -> bool:
     return bool(jev_key())
 
-def llm_key() -> str:
+def llm_key(provider: str | None = None) -> str:
     """起草那把 key，所有语言模型来源共用。"""
-    return _get_key(LLM_ENV)
+    return _get_key(key_env(provider or draft_provider(), "draft"))
 
 def has_llm_key() -> bool:
     return bool(llm_key())
@@ -162,10 +162,10 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
     """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。"""
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
-    # 没重填就把老变量里的值抄进新名字，迁移一次性做完（_get_key 已经退回读过老的了）
+    jev_env, draft_env = key_env(jev, "jev"), key_env(draft, "draft")
     wrote_key = False
-    for env, typed in ((JEV_ENV, jev_key_text), (LLM_ENV, llm_key_text)):
-        value = typed or ("" if _read_env(env) else _get_key(env))
+    for env, typed in ((jev_env, jev_key_text), (draft_env, llm_key_text)):
+        value = (typed or "").strip() or ("" if _read_env(env) else _get_key(env))
         if value:
             _set_key(env, value)
             wrote_key = True

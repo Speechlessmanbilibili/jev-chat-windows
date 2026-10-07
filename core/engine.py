@@ -26,7 +26,7 @@ def _add_usage(total: dict, one: dict | None) -> None:
 def analyze(messages: list, relationship: str, model: str | None = None,
             timeout: float = 30, context: int = 10, provider: str = "deepseek",
             base_url: str | None = None, reply_to: str | None = None, style: str = "",
-            thinking: bool = False, jev_provider: str = "openrouter",
+            thinking: bool = False, jev_provider: str = "openai",
             jev_model: str | None = None) -> dict:
     """messages: [(from, text)] from ∈ {her, me}，最新一条在最后；
     群聊里可以带第三项 name（说这句话的人），单聊不带。

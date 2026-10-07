@@ -246,7 +246,7 @@ def guidance_text(answers: dict) -> str:
         lines.append("- " + "；".join(tail))
     if not lines:
         return ""
-    return "判断参考（Jev 给的，起草要顺着它写，但口吻仍按我的）：\n" + "\n".join(lines)
+    return "判断参考（起草时参考以下结果，口吻仍按我的）：\n" + "\n".join(lines)
 
 
 def build_state(messages: list, relationship: str, keep: int = 10,
