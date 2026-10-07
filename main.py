@@ -1,10 +1,8 @@
 # -*- coding: utf-8 -*-
-"""父进程：只管界面。截图 + OCR 在 app/worker.py 的子进程里跑，队列里收新消息 →
-冒出新的对方消息才调 engine → 悬浮窗给 3 条候选 → 人点「填入」。发送永远手动。静默期零调用。
-上下文、结果、聊天记录都按会话名（子进程 OCR 头部标题得来）分开存，切会话不串味。
+"""父进程负责界面和任务调度，子进程采集窗口并执行 OCR。
 
-    pip install rapidocr-onnxruntime numpy windows-capture PySide6-Fluent-Widgets
-两个模型（判断 Jev / 起草语言模型）的来源和 key 在独立设置页填写，不用改代码。IDE 里直接 Run。
+对方的新消息触发意图与语气分析。回复起草由用户点击后触发。
+上下文、分析和候选按会话保存，后台结果通过版本号校验后显示。
 """
 import ctypes
 import multiprocessing
@@ -18,7 +16,7 @@ from app.capture import find_chat_hwnd
 from app.fill import fill
 from app.overlay import Overlay
 from app.version import VERSION
-from core.engine import analyze
+from core.engine import analyze, generate_replies
 from app.i18n import T
 
 # {会话名: {history, result, rev, target, senders}}：每个会话各自的上下文、上次结果和版本号，互不串味
@@ -26,14 +24,16 @@ from app.i18n import T
 # 只是缓冲区，实际喂模型几条由设置里的「参考上下文」决定
 # senders：这个群里发过言的人，去重、最近的排最前；target：用户挑的回复对象（None = 跟着最近那个走）
 chats = {}
-state = {"area": None, "busy": False, "rerun": None, "hwnd": None, "chat": ""}
+state = {"area": None, "hwnd": None, "chat": ""}
 results = queue.Queue()
+draft_results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
 
 
 def chat_of(title):
     return chats.setdefault(title, {"history": deque(maxlen=60), "result": None, "rev": 0,
-                                    "target": None, "senders": []})
+                                    "target": None, "senders": [], "analysis_busy": False,
+                                    "pending": None, "draft_rev": None, "analysis_rev": None})
 
 
 def target_of(title):
@@ -42,6 +42,15 @@ def target_of(title):
     if chat["target"] in chat["senders"]:
         return chat["target"]
     return chat["senders"][0] if chat["senders"] else None
+
+
+def result_for(title):
+    chat = chat_of(title)
+    result = chat["result"]
+    active = chat["analysis_busy"] and (chat["analysis_rev"] == chat["rev"] or chat["pending"] is not None)
+    if result or active:
+        return {**(result or {}), "analysis_busy": active}
+    return None
 
 
 def fill_reply(text):
@@ -114,15 +123,11 @@ def on_toggle_capture(on):
 def analyze_bg(msgs, title, revision, reply_to=None):
     """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
     try:
-        results.put(("ok", analyze(msgs, settings.relationship(), context=settings.context(),
-                                   model=settings.draft_model() or None,
-                                   provider=settings.draft_provider(),
-                                   base_url=settings.draft_base_url() or None,
-                                   reply_to=reply_to, style=settings.style(),
-                                   thinking=settings.thinking(),
-                                   jev_provider=settings.jev_provider(),
-                                   jev_model=settings.jev_model() or None),
-                     title, revision))
+        options = dict(relationship=settings.relationship(), context=settings.context(),
+                       jev_provider=settings.jev_provider(), jev_model=settings.jev_model() or None)
+        result = analyze(msgs, reply_to=reply_to, **options)
+        result.update(_messages=msgs, _options=options, _rev=revision)
+        results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"{T('分析失败: ')}{e}", title, revision))
 
@@ -138,29 +143,77 @@ def start_analyze(title, msgs):
     if not settings.has_jev_key():
         ov.set_status("请先在设置中配置模型", "warning")
         return
-    if not settings.has_llm_key():
-        ov.set_status(lambda name=settings.draft_provider_name():
-                      f"{T('起草来源 ')}{name}{T(' 没填密钥，去设置里补上')}", "warning")
+    chat = chat_of(title)
+    if chat["analysis_busy"]:
+        chat["pending"] = msgs
+        if title == ov.current_chat():
+            ov.set_busy(True)
         return
-    state["busy"] = True
-    ov.set_busy(True)
+    chat["analysis_busy"] = True
+    chat["analysis_rev"] = chat["rev"]
+    if title == ov.current_chat():
+        ov.set_busy(True)
     reply_to = target_of(title) if settings.reply_target() else None  # 开关关着就是今天的行为
     threading.Thread(target=analyze_bg, args=(msgs, title, chat_of(title)["rev"], reply_to),
                      daemon=True).start()
+
+
+def invalidate_chat(title):
+    """新消息或目标变化立即使旧分析和候选失效。"""
+    chat = chat_of(title)
+    chat["rev"] += 1
+    chat["draft_rev"] = None
+    if chat["result"]:
+        chat["result"] = {**chat["result"], "stale": True, "candidates": [],
+                          "draft_busy": False, "draft_error": ""}
+    if title == ov.current_chat():
+        ov.invalidate_replies()
+
+
+def draft_bg(title, revision, analysis):
+    try:
+        result = generate_replies(analysis["_messages"], analysis=analysis,
+                                 **analysis["_options"], model=settings.draft_model() or None,
+                                 provider=settings.draft_provider(),
+                                 base_url=settings.draft_base_url() or None,
+                                 style=settings.style(), thinking=settings.thinking())
+        draft_results.put(("ok", result, title, revision))
+    except Exception as e:
+        draft_results.put(("err", f"{T('起草失败：')}{e}", title, revision))
+
+
+def on_generate(title):
+    chat = chat_of(title)
+    result = chat["result"]
+    if title != state["chat"] or not result or result.get("stale") or chat["analysis_busy"]:
+        ov.set_draft_busy(False, "请等待当前会话的最新分析完成。")
+        return
+    if chat["draft_rev"] == chat["rev"]:
+        return
+    if not settings.has_llm_key():
+        ov.set_draft_busy(False, "请在设置中配置起草密钥，再生成回复。")
+        return
+    if settings.draft_provider().startswith("custom") and not settings.draft_base_url():
+        ov.set_draft_busy(False, "请在设置中填写起草来源的 Base URL。")
+        return
+    if not settings.draft_model():
+        ov.set_draft_busy(False, "请在设置中选择起草模型。")
+        return
+    chat["draft_rev"] = chat["rev"]
+    result.update(draft_busy=True, draft_error="", candidates=[])
+    ov.set_draft_busy(True)
+    threading.Thread(target=draft_bg, args=(title, chat["rev"], dict(result)), daemon=True).start()
 
 
 def on_target_change(title, name):
     """用户挑了回复对象：记下来，这个会话里有对方的话就照新对象重跑一次。"""
     chat = chat_of(title)
     chat["target"] = name
+    invalidate_chat(title)
     msgs = list(chat["history"])
     if not any(m[0] == "her" for m in msgs):
         return
-    if state["busy"]:
-        state["rerun"] = (title, msgs)
-        ov.set_busy(True)
-    else:
-        start_analyze(title, msgs)
+    start_analyze(title, msgs)
 
 
 def drain():
@@ -195,9 +248,9 @@ def drain():
             continue
         if kind == "dead":  # 采集彻底停了（微信关了之类），这才是真的要清状态
             state["area"] = None
-            for c in chats.values():  # 在跑的分析作废，回来的结果不再往界面上贴
-                c["rev"] += 1
-            state["rerun"] = None
+            for title in chats:
+                invalidate_chat(title)
+                chat_of(title)["pending"] = None
             ov.invalidate_replies()
             ov.set_busy(False)
             ov.set_capture(False, msg[1])
@@ -210,9 +263,7 @@ def drain():
         _, title, new, area = msg
         state["area"] = area
         chat = chat_of(title)
-        chat["rev"] += 1  # 这个会话有新消息了，它在跑的分析作废
-        if title == ov.current_chat():  # 看的是别的会话就别把人家的候选划掉
-            ov.invalidate_replies()
+        invalidate_chat(title)
         for who, name, text in new:
             chat["history"].append((who, text, name))
             ov.log_message(who, text, name, chat=title)
@@ -223,15 +274,12 @@ def drain():
         ov.set_targets(title, chat["senders"], target_of(title))  # 显不显示这一行由悬浮窗按开关决定
         if new[-1][0] == "her":  # 只有对方最新说话才值得分析
             msgs = list(chat["history"])
-            if state["busy"]:
-                state["rerun"] = (title, msgs)
-                ov.set_busy(True)
-            else:
-                start_analyze(title, msgs)
+            start_analyze(title, msgs)
         else:
-            state["rerun"] = None
-            ov.set_busy(False)
-            ov.set_status("你已回复，等待对方的新消息")
+            chat["pending"] = None
+            if title == ov.current_chat():
+                ov.set_busy(False)
+                ov.set_status("你已回复，等待对方的新消息")
 
 
 def tick():
@@ -242,24 +290,35 @@ def tick():
             ov.set_update(latest, url)
         while not results.empty():
             kind, r, title, revision = results.get()
-            state["busy"] = False
-            if state["rerun"]:  # 分析期间又来了新消息，接着跑最新的
-                (t, msgs), state["rerun"] = state["rerun"], None
-                start_analyze(t, msgs)
+            chat = chat_of(title)
+            chat["analysis_busy"] = False
+            if chat["pending"] is not None:
+                msgs, chat["pending"] = chat["pending"], None
+                start_analyze(title, msgs)
                 continue
-            if revision != chat_of(title)["rev"]:  # 这个会话后来又说话了，这份结果过期了
-                ov.set_busy(False)
+            if revision != chat["rev"]:
                 continue
             if kind == "ok":
                 chat_of(title)["result"] = r  # 先存着；正看着这个会话才立刻贴上去
                 if title == ov.current_chat():
                     ov.show(r)
-                else:
-                    ov.set_busy(False)
             else:
-                ov.set_busy(False)
-                ov.set_status("生成失败，请检查网络和服务设置；新消息到来后会重试。", "error")
+                if title == ov.current_chat():
+                    ov.set_busy(False)
+                    ov.set_status("分析失败，请检查网络和服务设置；新消息到来后会重试。", "error")
                 ov.log(r)
+        while not draft_results.empty():
+            kind, result, title, revision = draft_results.get()
+            chat = chat_of(title)
+            if revision != chat["rev"] or chat["draft_rev"] != revision:
+                continue
+            chat["draft_rev"] = None
+            if kind == "ok":
+                chat["result"] = {**result, "draft_busy": False, "draft_error": ""}
+            else:
+                chat["result"].update(draft_busy=False, draft_error=result)
+            if title == ov.current_chat():
+                ov.show(chat["result"])
     except Exception:
         traceback.print_exc()  # 一帧出错不退出
     ov.after(50, tick)
@@ -274,8 +333,8 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     child = dbg = None
     ov = Overlay(on_fill=fill_reply, on_toggle_capture=on_toggle_capture,
                  on_target_change=on_target_change, on_toggle_debug=set_debug,
-                 on_language_changed=on_language_changed,
-                 result_of=lambda t: chats.get(t, {}).get("result"))
+                 on_language_changed=on_language_changed, on_generate=on_generate,
+                 result_of=result_for)
     try:
         state["hwnd"], found = find_chat_hwnd()
         state["app"] = found.key

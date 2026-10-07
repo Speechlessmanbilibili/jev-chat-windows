@@ -31,9 +31,9 @@ def response_for(questions):
                           probabilities=[dict(value=v, probability=0.8 if v == chosen else 0.1)
                                          for v in values])
         else:
-            answer = dict(type='score', score=4.2, confidence=0.7,
-                          probabilities=[dict(value=4, label='4', probability=0.8),
-                                         dict(value=5, label='5', probability=0.2)])
+            answer = dict(type='score', score=2.2, confidence=0.7,
+                          probabilities=[dict(value=2, label='2', probability=0.8),
+                                         dict(value=3, label='3', probability=0.2)])
         answers.append(dict(name=name, **answer))
     return dict(answers=answers, model='gpt-6-luna', usage=dict(input_tokens=20, output_tokens=0))
 
@@ -41,7 +41,9 @@ def response_for(questions):
 class DecisionsTests(unittest.TestCase):
     def setUp(self):
         self.state = build_state([('her', '明天下午三点开会')], 'colleagues')
-        self.questions = dict(JUDGE_QUESTIONS, **build_rank_question(['甲', '乙', '丙']))
+        self.questions = dict(literal_question=dict(type='noul', instructions='字面问题？',
+                              criteria={'true': '直接询问信息', 'false': '含蓄表达'}),
+                              **JUDGE_QUESTIONS, **build_rank_question(['甲', '乙', '丙']))
 
     def test_question_conversion_preserves_criteria_and_order(self):
         original = copy.deepcopy(self.questions)
@@ -52,7 +54,7 @@ class DecisionsTests(unittest.TestCase):
         for criterion in original['literal_question']['criteria'].values():
             self.assertIn(criterion, predicate['instructions'])
         levels = next(q['levels'] for q in converted if q['type'] == 'score')
-        self.assertEqual([l['label'] for l in levels], list(map(str, range(10))))
+        self.assertEqual([l['label'] for l in levels], list(map(str, range(5))))
         self.assertEqual(converted[-1]['choices'][1], dict(value='reply_b', description='乙'))
         self.assertEqual(self.questions, original)
 
@@ -61,8 +63,8 @@ class DecisionsTests(unittest.TestCase):
         response['answers'].reverse()
         result = normalize_response(response, self.questions)
         self.assertEqual(result['answers']['literal_question']['noul'], 0.9)
-        self.assertEqual(result['answers']['danger_level']['score'], 4.2)
-        self.assertEqual(result['answers']['danger_level']['probabilities']['4'], 0.8)
+        self.assertEqual(result['answers']['danger_level']['score'], 2.2)
+        self.assertEqual(result['answers']['danger_level']['probabilities']['2'], 0.8)
         self.assertEqual(result['answers']['best_reply']['probabilities']['reply_b'], 0.8)
         response['answers'][0] = dict(type='refusal', name='best_reply')
         result = normalize_response(response, self.questions)
@@ -144,6 +146,10 @@ class DecisionsTests(unittest.TestCase):
         with patch.object(engine, 'ask', side_effect=fake_ask), \
                 patch.object(engine, 'draft_candidates', return_value=['甲', '乙', '丙']) as draft:
             result = engine.analyze([('her', '明天开会')], 'colleagues')
+            draft.assert_not_called()
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(len(calls[0]), 29)
+            result = engine.generate_replies([('her', '明天开会')], 'colleagues', result)
         self.assertEqual(len(calls), 2)
         self.assertEqual(list(calls[1]), ['best_reply'])
         self.assertEqual(result['best_index'], 1)

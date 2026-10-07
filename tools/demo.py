@@ -1,74 +1,56 @@
-# -*- coding: utf-8 -*-
-"""用合成对话验证判断、起草和排序，打印结果。
+"""用合成对话执行真实 API 验证，调用会产生 API 用量。
 
-默认使用 OpenAI Decisions 判断、DeepSeek 起草，需设置 OPENAI_API_KEY 和 LLM_API_KEY。
-运行：python -X utf8 -m tools.demo。调用会产生 API 用量。
+默认只分析意图和语气。--cases 验证多个场景，--draft 额外生成回复。
 """
 from __future__ import annotations
 
-import io
-import sys
-
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-
-from core.engine import analyze
+import argparse
+from app import settings
+from core.engine import analyze, generate_replies
+from core.intent import ratings
 from core.jev_client import JevError
-from core.questions import guidance_text
 
-MESSAGES = [
-    ("her", "你今天是不是又忘了我跟你说过什么？"),
-    ("me", "记得，你先别提示我，让我自己说。"),
-    ("her", "那你说。"),
-    ("me", "等一下，我想说完整一点。"),
-    ("her", "你最好是。"),
-]
-RELATIONSHIP = "romantic partners"
-PROVIDER = "deepseek"        # 起草来源，见 core.providers.DRAFT_PROVIDERS
-JEV_PROVIDER = "openai"  # 判断来源：openai / openrouter / typesafe
-
-
-def fmt(name: str, ans: dict) -> str:
-    t = ans.get("type")
-    if t == "noul":
-        return f"{name}: {ans.get('noul'):.2f}"
-    if t == "choice":
-        return f"{name}: {ans.get('choice')} (conf {ans.get('confidence'):.2f})"
-    if t == "score":
-        return f"{name}: {ans.get('score'):.1f}/9 (conf {ans.get('confidence'):.2f})"
-    return f"{name}: {ans}"
+CASES = (
+    ("问候", "friends", [("her", "你好，好久不见！最近过得怎么样？")]),
+    ("问责", "colleagues", [("me", "我答应今天交报告。"),
+                            ("her", "昨天已经提醒过你了，为什么还没交？你到底有没有负责？")]),
+    ("询问进度", "colleagues", [("her", "报告目前进度怎么样？我想安排后面的工作。")]),
+    ("提醒和感谢", "colleagues", [("her", "谢谢你整理的资料！记得明天上午十点前把附件发给我。")]),
+)
 
 
 def main() -> int:
-    print("对话:")
-    for w, t in MESSAGES:
-        print(f"  {w}: {t}")
-    try:
-        r = analyze(MESSAGES, RELATIONSHIP, provider=PROVIDER, jev_provider=JEV_PROVIDER)
-    except JevError as e:
-        print(f"\n失败: {e}")
-        return 1
-
-    print("\n判断:")
-    for name in ("literal_question", "true_intent", "danger_level",
-                 "should_reply_now", "best_action", "she_needs", "tension_resolved"):
-        if name in r["answers"]:
-            print("  " + fmt(name, r["answers"][name]))
-
-    block = guidance_text(r["answers"])  # 起草时喂进去的那张小抄
-    if block:
-        print("\n" + block)
-
-    print("\n候选（判断模型排序，★ = 推荐）:")
-    scores = r.get("scores")
-    for i, c in enumerate(r["candidates"]):
-        pct = f"  {scores[i]:.0%}" if scores else ""
-        print(f"  {'★' if i == r['best_index'] else ' '} {c}{pct}")
-
-    u = r["usage"]
-    if u:
-        print(f"\nusage: in={u.get('input_tokens')} out={u.get('output_tokens')} "
-              f"cost=${u.get('cost')}")
-    print("\n期望核对: true_intent≈confirm_you_care, best_action≈check_history, danger_level 中高档")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--cases", action="store_true", help="分析全部合成场景")
+    parser.add_argument("--draft", action="store_true", help="额外调用起草模型和排序")
+    args = parser.parse_args()
+    # 设置模块也能读取 Windows 用户环境中保存的密钥。
+    settings.jev_key()
+    if args.draft:
+        settings.llm_key()
+    cases = CASES if args.cases else CASES[:1]
+    for title, relationship, messages in cases:
+        print(f"\n场景：{title}")
+        for who, text in messages:
+            print(f"  {who}: {text}")
+        try:
+            result = analyze(messages, relationship, jev_provider=settings.jev_provider(),
+                             jev_model=settings.jev_model() or None)
+            for kind, label in (("intent", "意图"), ("tone", "语气")):
+                print(label + "：" + "、".join(f"{name} {value}%" if value is not None else f"{name} —"
+                                             for name, value in ratings(result["answers"], kind)[:4]))
+            print(f"评分项：{len(result['answers'])}；拒答项：{result['refused']}")
+            if args.draft:
+                result = generate_replies(messages, relationship, result,
+                                          provider=settings.draft_provider(), model=settings.draft_model() or None,
+                                          base_url=settings.draft_base_url() or None, style=settings.style(),
+                                          thinking=settings.thinking(), jev_provider=settings.jev_provider(),
+                                          jev_model=settings.jev_model() or None)
+                for index, text in enumerate(result["candidates"]):
+                    print(f"  {'★' if index == result['best_index'] else '·'} {text}")
+        except JevError as error:
+            print(f"失败：{error}")
+            return 1
     return 0
 
 

@@ -14,9 +14,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app import settings
+from core.intent import INTENT_QUESTIONS
 
 
-_STATES = ("ready", "waiting", "loading", "error", "setup", "settings", "models", "paused", "debug")
+_STATES = ("ready", "draft", "all", "waiting", "loading", "error", "setup", "settings", "models", "paused", "debug")
 
 # 调试视图预览用的真微信截图（只读进内存，不改不存）；没有就退一张空画面
 _FRAME = Path("/private/tmp/claude-501/-Users-lpitiless-Documents-project-wechatjev"
@@ -84,13 +85,16 @@ _RESULT = {
     "best_reply": "可以呀，周六六点在上次那家见！我也有点馋了 😋",
     "scores": [0.21, 0.66, 0.13],
     "answers": {
-        "literal_question": {"type": "noul", "noul": 0.98},
-        "true_intent": {"type": "choice", "choice": "casual_chat"},
+        **{name: {"type": "score", "score": 0} for name in INTENT_QUESTIONS},
+        "intent_confirmation": {"type": "score", "score": 3.6},
+        "intent_negotiation": {"type": "score", "score": 3.1},
+        "intent_invitation": {"type": "score", "score": 2.5},
+        "intent_smalltalk": {"type": "score", "score": 1.3},
+        "tone_friendly": {"type": "score", "score": 3.8},
+        "tone_relaxed": {"type": "score", "score": 3.2},
+        "tone_calm": {"type": "score", "score": 2.1},
+        "tone_concerned": {"type": "score", "score": 0.4},
         "danger_level": {"type": "score", "score": 0},
-        "should_reply_now": {"type": "noul", "noul": 0.96},
-        "best_action": {"type": "choice", "choice": "make_plan"},
-        "she_needs": {"type": "choice", "choice": "action"},
-        "tension_resolved": {"type": "noul", "noul": 0.99},
         "best_reply": {
             "type": "choice", "choice": "reply_b",
             "probabilities": {"reply_a": 0.21, "reply_b": 0.66, "reply_c": 0.13},
@@ -187,7 +191,8 @@ def main() -> int:
             ))
 
         # 只有当前会话有结果，切到另一个会话就是空态——跟真实情况一致
-        ov = Overlay(on_fill=simulate_fill, result_of=lambda t: _RESULT if t == _CHAT else None)
+        ov = Overlay(on_fill=simulate_fill, result_of=lambda t: _RESULT if t == _CHAT else None,
+                     on_generate=lambda title: ov.show(_RESULT))
         ov.win.setWindowTitle("JevChat-Windows · 界面演示（合成数据）")
         shot = ov.win  # 截图截哪个窗口；调试预览截调试窗
 
@@ -210,8 +215,13 @@ def main() -> int:
             ov.set_targets(_GROUP, _SENDERS, _SENDERS[0])  # 群聊才有回复对象这一行
             ov.set_chat(_CHAT)
             ov.show(_RESULT)
-            ov.set_status("演示模式：已生成 3 条建议，点击填入仅模拟操作。", kind="success")
-            ov.set_update("9.9.9", "https://github.com/Speechlessmanbilibili/jev-chat-windows/releases/latest")
+            ov.set_status("演示模式：合成评分，未调用 API。", kind="success")
+            if args.state == "draft":
+                ov._toggle_draft()
+                QTimer.singleShot(100, lambda: ov.home.verticalScrollBar().setValue(
+                    ov.draftToggle.y() - 20))
+            elif args.state == "all":
+                ov.intentPanel._toggle()
             if args.state == "loading":
                 ov.set_busy(True)
                 ov.set_status("演示模式：正在为最新消息生成建议…", kind="busy")
