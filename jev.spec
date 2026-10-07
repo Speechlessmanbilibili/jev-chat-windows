@@ -3,6 +3,7 @@
 onedir 不是 onefile：PySide6 + onnxruntime 打出来 ~150MB，onefile 每次启动都要解压一遍，慢且占临时盘。
 只在 Windows 上跑，下面的 collect_all 也只认 Windows 上装好的那几个包。"""
 from PyInstaller.utils.hooks import collect_all
+import os
 
 NAME = "jev-chat-windows"
 
@@ -12,7 +13,7 @@ hiddenimports = [
     "app.worker", "app.capture", "app.ocr", "app.fill", "app.overlay", "app.settings",
     "app.version", "app.update", "app.debugwin",  # debugwin 是开了调试视图才 import 的
     "core.engine", "core.draft", "core.jev_client", "core.questions", "core.providers",
-    "core.llm", "core.openai_decisions", "core.intent",
+    "core.llm", "core.openai_decisions", "core.intent", "tools.preview_ui",
 ]
 datas, binaries = [], []
 datas += [("docs/wechat-mp.png", "docs")]  # 设置页底部的公众号长条横幅
@@ -59,6 +60,11 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+# Qt 使用 Windows 自带的 ICU 接口。构建环境 PATH 中其他工具的同名
+# ICU DLL 可能带版本化符号，打入包中会覆盖系统接口并导致 QtCore 加载失败。
+a.binaries = [entry for entry in a.binaries
+              if os.path.basename(entry[0]).lower() not in {"icu.dll", "icuuc.dll", "icuin.dll"}
+              and not os.path.basename(entry[0]).lower().startswith("icudt")]
 pyz = PYZ(a.pure)
 
 exe = EXE(
@@ -71,7 +77,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,  # runner 上本来就没 upx，而且压 Qt / onnxruntime 的 DLL 是出了名的能压坏
-    console=False,  # 不要黑框；print 也就跟着没了，状态界面上都有，聊天内容本来就不许落日志
+    console=os.environ.get("JEV_BUILD_CONSOLE") == "1",  # 本地诊断可启用控制台，正式构建保持图形模式
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

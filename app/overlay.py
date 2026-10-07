@@ -1126,6 +1126,9 @@ class Overlay:
         bind(self.generateButton, "正在生成…" if busy else "生成回复")
         bind(self.draftFeedback, error or ("正在生成候选并排序…" if busy else
              "点击生成后，调用起草模型并为候选排序。"))
+        color = "#b44832" if error else (_GREEN if busy else _MUTED)
+        qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
+        setCustomStyleSheet(self.draftFeedback, qss, qss)
         if busy:
             self.cands = []
             self._clear_cards()
@@ -1338,6 +1341,8 @@ class Overlay:
             self.replyBox.addWidget(card)
             self.cards.append(card)
         reply_to = result.get("reply_to")
+        if "analyzed_text" in result:
+            self._show_latest(result["analyzed_text"])
         bind(self.insightTitle, lambda: T("分析摘要 · 对象 {name}").format(name=reply_to)
              if reply_to else T("分析摘要"))
         answers = result.get("answers") or {}

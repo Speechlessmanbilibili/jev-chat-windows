@@ -54,3 +54,16 @@ class IntentTests(unittest.TestCase):
                 self.assertRaises(JevError):
             engine.generate_replies([('her', '你好')], 'friends', analysis)
         self.assertEqual(analysis['answers']['intent_greeting']['score'], 4)
+
+    def test_group_quote_matches_selected_target(self):
+        with patch.object(engine, 'ask', return_value={'answers': {}}):
+            result = engine.analyze([('her', '请明天提交', '小李'), ('her', '你好', '小王')],
+                                    'colleagues', reply_to='小李')
+        self.assertEqual(result['analyzed_text'], '请明天提交')
+        self.assertEqual(result['analyzed_sender'], '小李')
+
+    def test_target_outside_context_fails_before_request(self):
+        with patch.object(engine, 'ask') as ask, self.assertRaises(JevError):
+            engine.analyze([('her', '请明天提交', '小李'), ('her', '你好', '小王')],
+                           'colleagues', reply_to='小李', context=1)
+        ask.assert_not_called()

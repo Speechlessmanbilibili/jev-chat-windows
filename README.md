@@ -94,6 +94,8 @@ $env:LLM_API_KEY = "你的起草服务 API 密钥"
 
 群聊可以启用“指定回复对象”，选择本次要分析和回应的人。起草区域中候选的排序概率表示模型对各选项的相对判断。
 
+指定对象后，首页引用该对象实际参与评分的发言。该人的发言超出参考上下文时，界面会提示增加上下文条数或更换对象。
+
 各会话分别保存本次运行中的上下文和结果。新消息或分析对象变化后，旧候选立即失效；后台返回的过期结果会被丢弃。起草失败的提示显示在起草区域，已完成的意图与语气分析继续保留。
 
 ## 数据处理
@@ -133,6 +135,12 @@ python -X utf8 -m venv .venv
 .\.venv\Scripts\python.exe -X utf8 -m tools.preview_ui --state settings
 ```
 
+发布包也支持合成数据预览，无需配置密钥：
+
+```powershell
+.\jev-chat-windows.exe --preview-ui --state ready
+```
+
 使用合成对话进行实际 API 测试，需要配置判断密钥，会产生 API 用量：
 
 ```powershell
@@ -151,6 +159,12 @@ python -X utf8 -m venv .venv
 ```
 
 构建结果位于 `dist/jev-chat-windows/`。分发时应包含整个目录，以及 `LICENSE`、`NOTICE` 和本 README。仓库中的 GitHub Actions 工作流也提供 Windows 构建。
+
+本机生成完整发布包可使用 `tools/build_release.ps1`。脚本先运行测试，再编译并打包，结果保存在 `dist/local-v版本号-时间/` 中：
+
+```powershell
+.\tools\build_release.ps1
+```
 
 ## 项目结构
 
