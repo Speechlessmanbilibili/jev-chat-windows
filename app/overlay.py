@@ -155,9 +155,9 @@ class _Surface(CardWidget):
 
 
 class _Fetched(QObject):
-    """取模型列表的后台线程 → 主线程：哪一组（SimpleNamespace）、取回来的模型 id、失败原因（成功是空串）。
+    """取模型列表的后台线程 → 主线程：控件组、请求版本号、模型 id、失败原因。
     Qt 不让跨线程碰控件，信号是跨线程唯一干净的路。"""
-    done = Signal(object, list, str)
+    done = Signal(object, int, list, str)
 
 
 class _TitleBar(QWidget):
@@ -740,7 +740,7 @@ class Overlay:
         """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。"""
         group = SimpleNamespace(kind=kind, table=table, ids=list(table),
                                 keyTitle="判断" if kind == "jev" else "起草",
-                                stored_key=lambda: "")
+                                stored_key=lambda: "", fetch_revision=0)
         heading = QHBoxLayout()
         heading.addWidget(_tlabel(title, 14, "#304c3c", True), 1)
         group.keyState = _label("", 12, _GREEN)
@@ -800,6 +800,8 @@ class Overlay:
 
     def _provider_changed(self, group):
         """换来源：模型框回到这家该有的值（存的就是这家才用存的，否则用它的默认），状态清掉。"""
+        group.fetch_revision += 1
+        group.fetchButton.setEnabled(True)
         provider = self._provider_of(group)
         saved = settings.jev_provider() if group.kind == "jev" else settings.draft_provider()
         stored = settings.jev_model() if group.kind == "jev" else settings.draft_model()
@@ -841,10 +843,12 @@ class Overlay:
             return
         bind(group.status, "获取中…", "setText")
         group.fetchButton.setEnabled(False)
-        threading.Thread(target=lambda: self._list_models(group, provider, key, base),
+        group.fetch_revision += 1
+        revision = group.fetch_revision
+        threading.Thread(target=lambda: self._list_models(group, provider, key, base, revision),
                          daemon=True).start()
 
-    def _list_models(self, group, provider, key, base):
+    def _list_models(self, group, provider, key, base, revision):
         """后台线程：判断走 jev_client，起草按协议走 llm；失败把原因一起送回主线程。"""
         try:
             if group.kind == "jev":
@@ -856,11 +860,14 @@ class Overlay:
                     models = [m for m in models if spec.keep(m)]
             reason = "" if models else "这个来源没返回任何模型"
         except Exception as exc:  # 线程里漏异常会静默吞掉，按钮就永远停在禁用态
-            models, reason = [], str(exc)[:120]
-        self._fetched.done.emit(group, models, reason)
+            # 新填的密钥尚未进入环境变量，也要在截断错误文本前完整脱敏。
+            models, reason = [], jev_client.redact_secrets(str(exc), key)[:120]
+        self._fetched.done.emit(group, revision, models, reason)
 
-    def _models_fetched(self, group, models, reason):
+    def _models_fetched(self, group, revision, models, reason):
         """回到主线程：填进下拉框，原来选中的还在列表里就留着。"""
+        if revision != group.fetch_revision:
+            return
         group.fetchButton.setEnabled(True)
         if not models:
             bind(group.status, reason or "获取失败，检查密钥、网络或 Base URL")
@@ -876,6 +883,8 @@ class Overlay:
 
     def _set_group(self, group, provider, model):
         """把存下来的来源和模型放回一组控件里；填充不算用户操作，别触发换来源的重置。"""
+        group.fetch_revision += 1
+        group.fetchButton.setEnabled(True)
         group.providerBox.blockSignals(True)
         group.providerBox.setCurrentIndex(group.ids.index(provider))
         group.providerBox.blockSignals(False)

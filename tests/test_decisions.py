@@ -5,13 +5,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import httpx
 import openai
 
 from app import settings
 from core import engine
+from core.draft import draft_candidates
 from core.jev_client import JevError, _api_key, ask, list_models, redact_secrets
 from core.openai_decisions import convert_questions, normalize_response
 from core.providers import key_env
@@ -124,6 +125,16 @@ class DecisionsTests(unittest.TestCase):
             ask(self.state, self.questions)
         self.assertEqual(caught.exception.status, 401)
         self.assertNotIn('official-test', str(caught.exception))
+        # 设置页的新密钥尚未保存；错误文本截断前也要完成脱敏。
+        unsaved = 'unsaved-' + 's' * 180
+        def handler(request):
+            return httpx.Response(400, json={'error': {'message': 'x' * 200 + unsaved}})
+        with patch.dict(os.environ, {}, clear=True), \
+                patch('openai.OpenAI', side_effect=client), self.assertRaises(JevError) as caught:
+            list_models('openai', unsaved)
+        self.assertEqual(caught.exception.status, 400)
+        self.assertNotIn('unsaved-', str(caught.exception))
+        self.assertIn('[REDACTED]', str(caught.exception))
 
     def test_only_decisions_models_are_offered(self):
         factory = openai.OpenAI
@@ -157,7 +168,57 @@ class DecisionsTests(unittest.TestCase):
         self.assertTrue(draft.call_args.kwargs['guidance'])
 
 
+class DraftCompatibilityTests(unittest.TestCase):
+    def test_luna_http_contract_and_legacy_model_compatibility(self):
+        requests = []
+        factory = openai.OpenAI
+        def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={
+                'id': 'chat-test', 'object': 'chat.completion', 'created': 0,
+                'model': 'gpt-6-luna', 'choices': [{'index': 0, 'finish_reason': 'stop',
+                    'message': {'role': 'assistant', 'content': '["你好呀","最近怎么样","很高兴见到你"]'}}]})
+        def client(**kwargs):
+            return factory(**kwargs, http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+        with patch.dict(os.environ, {'LLM_API_KEY': 'independent-draft',
+                                     'OPENAI_API_KEY': 'judgment-only'}, clear=True), \
+                patch('openai.OpenAI', side_effect=client):
+            for model, thinking in ((None, False), (None, True), ('gpt-4.1-mini', False)):
+                with self.subTest(model=model, thinking=thinking):
+                    candidates = draft_candidates([('her', '你好')], 'friends', provider='openai',
+                                                  model=model, thinking=thinking)
+                    self.assertEqual(len(candidates), 3)
+                    request = requests[-1]
+                    self.assertEqual(str(request.url), 'https://api.openai.com/v1/chat/completions')
+                    self.assertEqual(request.headers['authorization'], 'Bearer independent-draft')
+                    body = json.loads(request.content)
+                    if model is None:
+                        self.assertEqual(body['model'], 'gpt-6-luna')
+                        self.assertEqual(body['max_completion_tokens'], 4000 if thinking else 400)
+                        self.assertEqual(body['reasoning_effort'], 'medium' if thinking else 'none')
+                        self.assertNotIn('max_tokens', body)
+                        if thinking:
+                            self.assertNotIn('temperature', body)
+                        else:
+                            self.assertEqual(body['temperature'], 1.2)
+                    else:
+                        self.assertEqual(body['max_tokens'], 400)
+                        self.assertEqual(body['temperature'], 1.2)
+                        self.assertNotIn('reasoning_effort', body)
+        self.assertEqual(len(requests), 3)
+
+
 class KeySettingsTests(unittest.TestCase):
+    def test_invalid_config_types_use_defaults(self):
+        for payload in ('[]', 'null', '42', '"配置"',
+                        '{"jev_provider": [], "draft_provider": {}}'):
+            with self.subTest(payload=payload), \
+                    patch('builtins.open', mock_open(read_data=payload)):
+                self.assertEqual(settings.jev_provider(), 'openai')
+                self.assertEqual(settings.jev_model(), 'gpt-6-luna')
+                self.assertEqual(settings.draft_provider(), 'deepseek')
+                self.assertEqual(settings.context(), 10)
+
     def test_provider_key_isolation_and_no_draft_fallback(self):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'official', 'JEV_API_KEY': 'judge',
                                      'LLM_API_KEY': 'draft'}, clear=True), \

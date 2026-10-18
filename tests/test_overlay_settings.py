@@ -96,6 +96,46 @@ class OverlaySettingsTests(unittest.TestCase):
             finally:
                 overlay.win.close()
 
+    def test_model_fetch_discards_results_after_switching_away_and_back(self):
+        with patch.object(settings, '_read', side_effect=lambda name, default=None: default), \
+                patch.object(settings, '_read_env', return_value='test-key'), \
+                patch('app.overlay.threading.Thread') as thread:
+            overlay = Overlay(on_fill=lambda text: None)
+            try:
+                group = overlay.draft
+                overlay._fetch_models(group)
+                old_request = thread.call_args.kwargs['target']
+                group.providerBox.setCurrentIndex(group.ids.index('openai'))
+                self.assertTrue(group.fetchButton.isEnabled())
+                group.providerBox.setCurrentIndex(group.ids.index('deepseek'))
+                overlay._fetch_models(group)
+                current_request = thread.call_args.kwargs['target']
+                with patch('app.overlay.llm.list_models', return_value=['old-model']):
+                    old_request()
+                self.assertFalse(group.fetchButton.isEnabled())
+                self.assertEqual(group.modelBox.count(), 0)
+                self.assertEqual(group.modelBox.text(), 'deepseek-flash')
+                with patch('app.overlay.llm.list_models', return_value=['deepseek-flash', 'new-model']):
+                    current_request()
+                self.assertTrue(group.fetchButton.isEnabled())
+                self.assertEqual(group.modelBox.count(), 2)
+                self.assertEqual(group.modelBox.text(), 'deepseek-flash')
+            finally:
+                overlay.win.close()
+
+    def test_model_fetch_error_redacts_unsaved_key(self):
+        with patch.object(settings, '_read', side_effect=lambda name, default=None: default), \
+                patch.object(settings, '_read_env', return_value=''), \
+                patch('app.overlay.llm.list_models', side_effect=RuntimeError('service echoed unsaved-key')):
+            overlay = Overlay(on_fill=lambda text: None)
+            try:
+                group = overlay.draft
+                overlay._list_models(group, 'openai', 'unsaved-key', None, group.fetch_revision)
+                self.assertNotIn('unsaved-key', group.status.text())
+                self.assertIn('[REDACTED]', group.status.text())
+            finally:
+                overlay.win.close()
+
 
 if __name__ == '__main__':
     unittest.main()

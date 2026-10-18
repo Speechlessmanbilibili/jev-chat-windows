@@ -153,7 +153,7 @@ def main() -> int:
         return (["typesafe/jev-1.13"] if provider == "openrouter"
                 else ["jev-1.13.0", "jev-latest", "jev-preview"])
 
-    def fake_llm_models(protocol, base_url, api_key, timeout=10):
+    def fake_llm_models(protocol, base_url, api_key, timeout=10, headers=None):
         return {"anthropic": ["claude-demo-4", "claude-demo-4-mini"],
                 "gemini": ["gemini-demo-pro", "gemini-demo-flash"]}.get(
             protocol, ["deepseek-flash", "deepseek-reasoner", "demo-model-a", "demo-model-b"])

@@ -30,14 +30,13 @@ class JevError(Exception):
         self.status = status
 
 
-def redact_secrets(text: str) -> str:
-    """Strip every live key from any string before print or disk write."""
+def redact_secrets(text: str, *extra_keys: str) -> str:
+    """清除环境中的密钥和本次请求使用的未保存密钥。"""
     if not isinstance(text, str):
         text = str(text)
-    for env in ENV_VARS:
-        key = os.environ.get(env) or ""
-        if key:
-            text = text.replace(key, "[REDACTED]")
+    keys = {key for key in (*extra_keys, *(os.environ.get(env) for env in ENV_VARS)) if key}
+    for key in sorted(keys, key=len, reverse=True):
+        text = text.replace(key, "[REDACTED]")
     return text
 
 
@@ -51,14 +50,14 @@ def _status_of(exc: Exception) -> int | None:
     return None
 
 
-def _fail(exc: Exception, what: str) -> NoReturn:
+def _fail(exc: Exception, what: str, key: str = "") -> NoReturn:
     """SDK 抛的异常 → 一句人话的 JevError。消息过脱敏，绝不把 key 带出来。"""
     if isinstance(exc, JevError):
         raise exc
     status = _status_of(exc)
     hint = {401: "密钥被拒", 403: "没有权限", 404: "模型或地址不对", 422: "请求被拒",
             429: "被限流", 529: "服务过载"}.get(status, "")
-    detail = redact_secrets(str(exc)).strip()[:300]
+    detail = redact_secrets(str(exc), key).strip()[:300]
     head = f"{what} HTTP {status}" if status else f"{what}失败"
     raise JevError(f"{head}: {hint or detail or type(exc).__name__}", status) from None
 
@@ -75,12 +74,12 @@ def _api_key(env: str = JEV_ENV) -> str:
     return key
 
 
-def _error_body(exc: urllib.error.HTTPError) -> str:
+def _error_body(exc: urllib.error.HTTPError, key: str = "") -> str:
     try:
         raw = exc.read().decode("utf-8", errors="replace")
     except Exception:
         raw = ""
-    return redact_secrets(raw)[:800]
+    return redact_secrets(raw, key)[:800]
 
 
 def ask(state: dict, questions: dict, timeout: float = 20,
@@ -125,7 +124,7 @@ def _ask_typesafe(state: dict, questions: dict, key: str, model: str, timeout: f
                                          timeout=timeout) as client:
             result = client.system_one(state, questions, model=model)
     except Exception as exc:
-        _fail(exc, "Jev 判断")
+        _fail(exc, "Jev 判断", key)
     return {
         "answers": {name: _answer(a) for name, a in result.answers.items()},
         "usage": {"input_tokens": result.usage.input_tokens,
@@ -159,7 +158,7 @@ def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout:
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
             last_status = exc.code
-            last_body = _error_body(exc)
+            last_body = _error_body(exc, key)
             if last_status in (429, 529) and attempt < MAX_RETRIES:
                 time.sleep(2**attempt)
                 continue
@@ -176,7 +175,7 @@ def _ask_openrouter(state: dict, questions: dict, key: str, model: str, timeout:
                 continue
             raise JevError(f"Jev request timed out after {timeout}s") from exc
         except urllib.error.URLError as exc:
-            reason = redact_secrets(getattr(exc, "reason", exc))
+            reason = redact_secrets(getattr(exc, "reason", exc), key)
             if attempt < MAX_RETRIES:
                 time.sleep(2**attempt)
                 continue
@@ -196,13 +195,13 @@ def _check_openrouter_key(key: str, timeout: float) -> None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             resp.read()
     except urllib.error.HTTPError as exc:
-        hint = {401: "密钥被拒", 403: "没有权限"}.get(exc.code, _error_body(exc)[:200])
+        hint = {401: "密钥被拒", 403: "没有权限"}.get(exc.code, _error_body(exc, key)[:200])
         raise JevError(f"取模型列表 HTTP {exc.code}: {hint}") from None
     except (TimeoutError, socket.timeout):
         raise JevError(f"取模型列表请求超时（{timeout}s）") from None
     except urllib.error.URLError as exc:
         raise JevError(
-            f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc))}") from None
+            f"取模型列表失败: {redact_secrets(getattr(exc, 'reason', exc), key)}") from None
 
 
 def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
@@ -215,7 +214,7 @@ def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
                                timeout=timeout, max_retries=1) as client:
                 client.models.retrieve(JEV_PROVIDERS["openai"].default)
         except Exception as exc:
-            _fail(exc, "获取 Decisions 模型")
+            _fail(exc, "获取 Decisions 模型", key)
         return [JEV_PROVIDERS["openai"].default]
     if provider == "typesafe":
         import typesafe_sdk
@@ -225,7 +224,7 @@ def list_models(provider: str, key: str, timeout: float = 10) -> list[str]:
                                              timeout=timeout) as client:
                 return sorted({m.name for m in client.models.list().models})
         except Exception as exc:
-            _fail(exc, "取模型列表")
+            _fail(exc, "取模型列表", key)
     # OpenRouter 的 Jev 是 Decisions API 专属模型，不在 /api/v1/models 目录里
     # （也没有列它的专用端点），列表按官方模型页写死，别名列排最前（永远指向最新版）。
     # key 对不对由探测兜着，别让坏密钥等到第一次判断才暴露。

@@ -64,7 +64,7 @@ DRAFT_PROVIDERS = {
 # 这两个来源没有固定地址，设置页要多露一行 Base URL 出来
 CUSTOM = ("custom_openai", "custom_anthropic")
 # 起草时认思考开关的来源，设置页那句提示照着这里写
-THINKING = ("DeepSeek", "OpenRouter", "Anthropic", "Gemini")
+THINKING = ("DeepSeek", "OpenRouter", "OpenAI GPT-6 Luna", "Anthropic", "Gemini")
 # 所有可能存 key 的环境变量（新两把 + 两个老名字），脱敏时一次全过一遍（jev_client.redact_secrets）
 ENV_VARS = sorted({OPENAI_ENV, JEV_ENV, LLM_ENV, *LEGACY.values()})
 

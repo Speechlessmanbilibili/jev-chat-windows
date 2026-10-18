@@ -115,4 +115,4 @@ def ask_openai(state: dict, questions: dict, key: str, model: str, timeout: floa
                 response = client.post("/decisions", cast_to=dict, body=payload)
         return normalize_response(response, questions)
     except Exception as exc:
-        _fail(exc, "OpenAI Decisions 判断")
+        _fail(exc, "OpenAI Decisions 判断", key)

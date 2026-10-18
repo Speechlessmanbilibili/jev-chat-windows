@@ -27,7 +27,8 @@ def _read(name: str, default=None):
     """读 config.json 里的一个字段；每次都重新读文件，改设置不用重启进程。"""
     try:
         with open(_CONFIG, encoding="utf-8") as f:
-            value = json.load(f).get(name)
+            data = json.load(f)
+        value = data.get(name) if isinstance(data, dict) else None
     except (OSError, ValueError):
         return default
     return default if value is None else value
@@ -54,7 +55,7 @@ def language() -> str:
 def jev_provider() -> str:
     """判断来源；新配置默认使用 OpenAI Decisions。"""
     v = _read("jev_provider")
-    return v if v in JEV_PROVIDERS else _DEFAULT_JEV
+    return v if isinstance(v, str) and v in JEV_PROVIDERS else _DEFAULT_JEV
 
 def jev_model() -> str:
     """判断模型 id；空 = 用该来源的默认模型。"""
@@ -63,7 +64,7 @@ def jev_model() -> str:
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
     v = _read("draft_provider")
-    return v if v in DRAFT_PROVIDERS else _DEFAULT_DRAFT
+    return v if isinstance(v, str) and v in DRAFT_PROVIDERS else _DEFAULT_DRAFT
 
 def draft_provider_name() -> str:
     return DRAFT_PROVIDERS[draft_provider()].name
@@ -81,7 +82,7 @@ def reply_target() -> bool:
     return bool(_read("reply_target", False))
 
 def thinking() -> bool:
-    """起草时是否开思考模式：慢且贵，默认关。只有 DeepSeek / OpenRouter / Anthropic / Gemini 吃它。"""
+    """起草思考模式，默认关；支持的来源及模型见 core.providers.THINKING。"""
     return bool(_read("thinking", False))
 
 def check_update() -> bool:

@@ -41,13 +41,20 @@ def chat(protocol: str, base_url: str | None, api_key: str, model: str, system: 
         return _gemini(base_url, api_key, model, system, user_turns,
                        temperature, max_tokens, thinking, timeout)
     return _openai(base_url, api_key, model, system, user_turns,
-                   temperature, max_tokens, extra_body, headers, timeout)
+                   temperature, max_tokens, thinking, extra_body, headers, timeout)
 
 
 def _openai(base_url, api_key, model, system, user_turns, temperature, max_tokens,
-            extra_body, headers, timeout) -> str:
+            thinking, extra_body, headers, timeout) -> str:
     import openai
 
+    options = {"temperature": temperature, "max_tokens": max_tokens}
+    if model == "gpt-6-luna" or model.startswith("gpt-6-luna-"):
+        # Luna 默认会推理；开启时省略采样温度，关闭时显式指定 none。
+        options = {"max_completion_tokens": max_tokens,
+                   "reasoning_effort": "medium" if thinking else "none"}
+        if not thinking:
+            options["temperature"] = temperature
     try:
         client = openai.OpenAI(base_url=base_url or None, api_key=api_key,
                                timeout=timeout, max_retries=2,
@@ -55,11 +62,11 @@ def _openai(base_url, api_key, model, system, user_turns, temperature, max_token
         resp = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": system}] + _turns(user_turns),
-            temperature=temperature, max_tokens=max_tokens,
+            **options,
             stream=False,  # DeepSeek 要显式关；别家无所谓
             **({"extra_body": extra_body} if extra_body else {}))
     except Exception as exc:
-        _fail(exc, "起草")
+        _fail(exc, "起草", api_key)
     return resp.choices[0].message.content or ""
 
 
@@ -79,7 +86,7 @@ def _anthropic(base_url, api_key, model, system, user_turns, temperature, max_to
                                          messages=_turns(user_turns), max_tokens=max_tokens,
                                          temperature=temperature, **extra)
     except Exception as exc:
-        _fail(exc, "起草")
+        _fail(exc, "起草", api_key)
     # 开了思考的话前面还有 thinking 块，只取文本块
     return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
 
@@ -107,7 +114,7 @@ def _gemini(base_url, api_key, model, system, user_turns, temperature, max_token
                     for m in _turns(user_turns, assistant="model")]  # Gemini 那边助手叫 model
         resp = client.models.generate_content(model=model, contents=contents, config=config)
     except Exception as exc:
-        _fail(exc, "起草")
+        _fail(exc, "起草", api_key)
     return resp.text or ""
 
 
@@ -122,14 +129,14 @@ def list_models(protocol: str, base_url: str | None, api_key: str,
                                          timeout=timeout, max_retries=1)
             ids = [m.id for m in client.models.list()]
         except Exception as exc:
-            _fail(exc, "取模型列表")
+            _fail(exc, "取模型列表", api_key)
     elif protocol == "gemini":
         try:
             client, _ = _gemini_client(base_url, api_key, timeout)
             # 名字带 models/ 前缀，调用时用不上，剥掉
             ids = [str(m.name).removeprefix("models/") for m in client.models.list() if m.name]
         except Exception as exc:
-            _fail(exc, "取模型列表")
+            _fail(exc, "取模型列表", api_key)
     else:
         import openai
 
@@ -139,7 +146,7 @@ def list_models(protocol: str, base_url: str | None, api_key: str,
                                    **({"default_headers": headers} if headers else {}))
             ids = [m.id for m in client.models.list()]
         except Exception as exc:
-            _fail(exc, "取模型列表")
+            _fail(exc, "取模型列表", api_key)
     return sorted(set(ids))
 
 
