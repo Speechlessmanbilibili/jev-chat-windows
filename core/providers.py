@@ -47,7 +47,7 @@ DRAFT_PROVIDERS = {
                        lambda on: {"thinking": {"type": "enabled" if on else "disabled"}}),
     "openrouter": _Draft("OpenRouter", "openai", OPENROUTER_BASE,
                          "deepseek/deepseek-v4.1-flash", lambda on: {"reasoning": {"enabled": on}}),
-    "openai": _Draft("OpenAI", "openai", OPENAI_BASE, "gpt-4.1-mini", _NONE),
+    "openai": _Draft("OpenAI", "openai", OPENAI_BASE, "gpt-6-luna", _NONE),
     "moonshot": _Draft("Moonshot (Kimi)", "openai", "https://api.moonshot.cn/v1", "", _NONE),
     "zhipu": _Draft("智谱 GLM", "openai", "https://open.bigmodel.cn/api/paas/v4", "", _NONE),
     "dashscope": _Draft("通义千问", "openai",

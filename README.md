@@ -78,7 +78,7 @@ $env:LLM_API_KEY = "你的起草服务 API 密钥"
 | --- | --- | --- | --- |
 | DeepSeek | OpenAI 兼容 | `https://api.deepseek.com` | `deepseek-flash` |
 | OpenRouter | OpenAI 兼容 | `https://openrouter.ai/api/v1` | `deepseek/deepseek-v4.1-flash` |
-| OpenAI | OpenAI 兼容 | `https://api.openai.com/v1` | `gpt-4.1-mini` |
+| OpenAI | OpenAI 兼容 | `https://api.openai.com/v1` | `gpt-6-luna` |
 | Moonshot / Kimi | OpenAI 兼容 | `https://api.moonshot.cn/v1` | 手动选择 |
 | 智谱 GLM | OpenAI 兼容 | `https://open.bigmodel.cn/api/paas/v4` | 手动选择 |
 | 通义千问 | OpenAI 兼容 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 手动选择 |
