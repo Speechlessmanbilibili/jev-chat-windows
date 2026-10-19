@@ -8,7 +8,7 @@ from unittest.mock import Mock, mock_open, patch
 
 import numpy as np
 
-from app import capture, fill, ocr, ocr_windows, settings
+from app import capture, chatapps, fill, ocr, ocr_windows, settings
 from core.draft import _parse_candidates
 from core.jev_client import JevError
 from core.llm import chat
@@ -16,6 +16,39 @@ from core.openai_decisions import normalize_response
 
 
 class ReliabilityTests(unittest.TestCase):
+    def test_chat_area_separates_composer_across_dpi_and_window_sizes(self):
+        def frame(scale=1, composer=0, separator=None):
+            image = np.full((800 * scale, 400 * scale, 3), 30, dtype=np.uint8)
+            image[:, 100 * scale:] = 240
+            image[60 * scale, 100 * scale:] = 80
+            if composer:
+                image[-composer * scale:, 100 * scale:] = 255
+            if separator:
+                image[-separator * scale, 100 * scale:] = 80
+            return image
+        for scale in (1, 2):
+            with self.subTest(scale=scale):
+                result = capture.chat_area(frame(scale, separator=22), scale=scale)
+                self.assertEqual(result[3], 680 * scale)
+                self.assertEqual(result[1], 60 * scale)
+                self.assertEqual(capture.chat_area(frame(scale, composer=80), scale=scale)[3], 720 * scale)
+                self.assertEqual(capture.chat_area(frame(scale, separator=80), scale=scale)[3], 720 * scale)
+                self.assertEqual(capture.chat_area(frame(scale, separator=22), app=chatapps.KAKAOTALK,
+                                                   scale=scale)[3], 778 * scale)
+        self.assertIsNone(capture.chat_area(frame()[:180]))
+
+    def test_voice_hint_filter_keeps_identical_text_inside_a_message_bubble(self):
+        reader = ocr.Reader.__new__(ocr.Reader)
+        reader.app, reader.lh = chatapps.WECHAT, None
+        box = [[1, 1], [150, 1], [150, 20], [1, 20]]
+        reader.ocr = Mock(return_value=([(box, '按住鼠标语音输入文字', 1)], None))
+        image = np.full((100, 200, 3), 240, dtype=np.uint8)
+        for background, expected in ((np.array([240, 240, 240]), []),
+                                     (np.array([255, 255, 255]), ['按住鼠标语音输入文字'])):
+            with self.subTest(background=background.tolist()), \
+                    patch.object(ocr, 'who_said', return_value=('her', background, 15)):
+                self.assertEqual([line[2] for line in reader.read(image, np.array([240, 240, 240]))], expected)
+
     def test_capture_detects_title_change_when_messages_are_identical(self):
         area = (0, 60, 200, 140, np.array([255, 255, 255]), 0)
         with patch('windows_capture.WindowsCapture'), patch.object(capture, 'chat_area', return_value=area):
@@ -47,7 +80,7 @@ class ReliabilityTests(unittest.TestCase):
         box = [[50, 50], [60, 50], [60, 60], [50, 60]]
         self.assertEqual(ocr.who_said(image, box), (None, None, 0))
         reader = ocr.Reader.__new__(ocr.Reader)
-        reader.app = SimpleNamespace(trim_top=lambda img: 10, join='')
+        reader.app = SimpleNamespace(key='wechat', trim_top=lambda img: 10, join='')
         reader.ocr = Mock(return_value=([([[1, 1], [20, 1], [20, 20], [1, 20]], '消息', 1)], None))
         reader.lh = None
         with patch.object(ocr, 'who_said', return_value=('her', np.array([0, 0, 0]), 15)):

@@ -9,6 +9,8 @@ SDK 都在函数里 import：桌面端一次只用到其中一家，启动时没
 """
 from __future__ import annotations
 from contextlib import closing
+import re
+from threading import Lock
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
     from .jev_client import JevError, _fail
@@ -17,6 +19,34 @@ except ImportError:
 
 # Anthropic 开思考模式时的预算：起草三句话用不上更多；max_tokens 必须比它大，下面会兜住
 _THINK_BUDGET = 2048
+_GEMINI_DEFAULT_THINKING: set[tuple[str, str]] = set()
+_GEMINI_THINKING_LOCK = Lock()
+GEMINI_DEFAULT_THINKING_NOTICE = "这个模型不支持当前的思考设置，本次回复使用了模型默认设置。"
+
+
+def _gemini_key(base_url, model):
+    return ((base_url or "").rstrip("/"), model.removeprefix("models/"))
+
+
+def gemini_uses_default_thinking(base_url, model):
+    """按服务地址和模型记录兼容结果，避免不同代理共用能力判断。"""
+    with _GEMINI_THINKING_LOCK:
+        return _gemini_key(base_url, model) in _GEMINI_DEFAULT_THINKING
+
+
+def _zero_thinking_rejected(exc):
+    """只处理明确指向思考配置的 400，其他参数或服务错误直接交给调用方。"""
+    status = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if str(status) != "400":
+        return False
+    detail = str(getattr(exc, "message", None) or exc).lower()
+    if not re.search(r"thinking[_.\s-]*(?:budget|config)", detail):
+        return False
+    unsupported = re.search(
+        r"unsupported|not supported|does not support|cannot|can't|disable|minimum|positive|at least|greater than|between",
+        detail)
+    invalid_zero = re.search(r"\b(?:0|zero)\b", detail) and re.search(r"invalid|not allowed|must", detail)
+    return bool(unsupported or invalid_zero)
 
 
 def _turns(user_turns: list[str], assistant: str = "assistant") -> list[dict]:
@@ -84,14 +114,13 @@ def _anthropic(base_url, api_key, model, system, user_turns, temperature, max_to
     extra = {}
     if thinking:
         extra["thinking"] = {"type": "enabled", "budget_tokens": _THINK_BUDGET}
-        temperature = 1.0  # 开了思考，Anthropic 只收 temperature=1
         max_tokens = max(max_tokens, _THINK_BUDGET + 1024)  # max_tokens 得装得下思考 + 正文
     try:
         with closing(anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
                                          timeout=timeout, max_retries=2)) as client:
             message = client.messages.create(model=model, system=system,
                                              messages=_turns(user_turns), max_tokens=max_tokens,
-                                             temperature=temperature, **extra)
+                                             **extra)
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise JevError("起草输出已达到长度上限，请关闭思考模式或更换模型后重试。")
         return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
@@ -114,14 +143,23 @@ def _gemini(base_url, api_key, model, system, user_turns, temperature, max_token
             thinking, timeout) -> str:
     try:
         client, types = _gemini_client(base_url, api_key, timeout)
-        config = types.GenerateContentConfig(
-            system_instruction=system, temperature=temperature, max_output_tokens=max_tokens,
-            # thinking_budget=0 才是真的关掉；不传是让模型自己定（等于开着）
-            thinking_config=None if thinking else types.ThinkingConfig(thinking_budget=0))
+        config_args = dict(system_instruction=system, temperature=temperature, max_output_tokens=max_tokens)
+        disable = not thinking and not gemini_uses_default_thinking(base_url, model)
+        config = types.GenerateContentConfig(**config_args,
+            **({"thinking_config": types.ThinkingConfig(thinking_budget=0)} if disable else {}))
         contents = [types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
                     for m in _turns(user_turns, assistant="model")]  # Gemini 那边助手叫 model
         with closing(client):
-            resp = client.models.generate_content(model=model, contents=contents, config=config)
+            try:
+                resp = client.models.generate_content(model=model, contents=contents, config=config)
+            except Exception as exc:
+                if not disable or not _zero_thinking_rejected(exc):
+                    raise
+                resp = client.models.generate_content(model=model, contents=contents,
+                                                      config=types.GenerateContentConfig(**config_args))
+                # 兼容请求成功后才缓存；失败时下次仍按用户选择尝试。
+                with _GEMINI_THINKING_LOCK:
+                    _GEMINI_DEFAULT_THINKING.add(_gemini_key(base_url, model))
         return resp.text or ""
     except Exception as exc:
         _fail(exc, "起草", api_key)
@@ -227,15 +265,15 @@ if __name__ == "__main__":
         "system", "user", "assistant", "user"]
     assert seen["openai.init"]["base_url"] is None  # 空 base_url = 用 SDK 默认地址
 
-    # Anthropic：system 单独传，思考是协议自带参数，开了必须 temperature=1 且 max_tokens 装得下预算
+    # Anthropic：system 单独传，SDK 已移除 temperature，max_tokens 仍需装得下思考预算。
     assert chat("anthropic", "https://api.anthropic.com", "sk-an", "claude-x", "S", ["U"],
                 temperature=1.2, max_tokens=400) == "嗯"
     assert seen["anthropic.call"]["system"] == "S" and "thinking" not in seen["anthropic.call"]
     assert seen["anthropic.call"]["messages"] == [{"role": "user", "content": "U"}]
-    assert seen["anthropic.call"]["temperature"] == 1.2
+    assert "temperature" not in seen["anthropic.call"]
     chat("anthropic", "", "k", "claude-x", "S", ["U"], temperature=1.2, max_tokens=400, thinking=True)
     assert seen["anthropic.call"]["thinking"] == {"type": "enabled", "budget_tokens": _THINK_BUDGET}
-    assert seen["anthropic.call"]["temperature"] == 1.0
+    assert "temperature" not in seen["anthropic.call"]
     assert seen["anthropic.call"]["max_tokens"] > _THINK_BUDGET
 
     # Gemini：助手那一轮叫 model；关思考 = thinking_budget 0，开 = 不传让模型自己定

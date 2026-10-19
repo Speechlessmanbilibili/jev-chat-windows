@@ -1148,9 +1148,10 @@ class Overlay:
         self._draft_busy = busy
         self.generateButton.setEnabled(self._current and not self._busy and not busy)
         bind(self.generateButton, "正在生成…" if busy else "生成回复")
-        bind(self.draftFeedback, error or ("正在生成候选并排序…" if busy else
+        notice = (self._result or {}).get("draft_notice", "") if not busy else ""
+        bind(self.draftFeedback, error or ("正在生成候选并排序…" if busy else notice or
              "点击“生成回复”，挑一句合适的再调整。"))
-        color = "#b44832" if error else (_GREEN if busy else _MUTED)
+        color = "#b44832" if error else (_GREEN if busy else "#996819" if notice else _MUTED)
         qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
         setCustomStyleSheet(self.draftFeedback, qss, qss)
         if busy:

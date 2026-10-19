@@ -127,6 +127,10 @@ class Reader:
             # 印在面板底色上的字都不是消息：气泡自带底色。微信的发言人名是灰字，
             # KakaoTalk 的是深色（对比度跟正文一样），所以不能只看 kind == "gray"。
             on_pane = np.abs(bg - pane_bg).sum() <= 6
+            if (self.app.key == "wechat" and on_pane
+                    and re.sub(r"\s+", "", text) == "按住鼠标语音输入文字"):
+                self.last_boxes.append(rect + ("gray", text))
+                continue  # 只过滤面板上的固定提示，气泡中相同的真实消息照常保留。
             if kind == "gray" or (on_pane and kind == "her"):
                 taken = bool(on_pane and box[0][0] < 0.25 * W and len(text) <= 16
                              and not re.search("[:：]", text))

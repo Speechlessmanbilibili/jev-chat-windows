@@ -7,6 +7,7 @@ pillow                        # only for the synthetic images in probe/
 
 # model SDKs: one official client per protocol, no hand-written HTTP (see core/llm.py)
 openai>=2.0                   # OpenAI Decisions and Chat Completions; other compatible providers
+httpx[socks]                  # SOCKS proxy support, including the optional socksio dependency
 typesafe-sdk                  # Jev judging over TypeSafe direct (api.typesafe.ai)
 anthropic                     # Anthropic Messages
 google-genai                  # Google Gemini

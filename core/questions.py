@@ -1,5 +1,8 @@
 """判断题、上下文整理和回复排序题。"""
-from .intent import INTENT_QUESTIONS as JUDGE_QUESTIONS, guidance_text
+try:
+    from .intent import INTENT_QUESTIONS as JUDGE_QUESTIONS, guidance_text
+except ImportError:
+    from intent import INTENT_QUESTIONS as JUDGE_QUESTIONS, guidance_text
 
 
 def build_state(messages: list, relationship: str, keep: int = 10,
@@ -31,6 +34,9 @@ def build_state(messages: list, relationship: str, keep: int = 10,
     }
     if reply_to:
         chat["reply_to"] = str(reply_to)
+    chat["reply_target"] = next((dict(message) for message in reversed(cleaned)
+                                 if message["from"] == "her"
+                                 and (not reply_to or message.get("name") == reply_to)), None)
     return {"chat": chat}
 
 
@@ -46,6 +52,9 @@ def build_rank_question(candidates: list[str]) -> dict:
                 "Which candidate reply is the most appropriate next message, "
                 "given the conversation and the other person's true need? "
                 "Prefer a reply that fits the intent and tone of the conversation. "
+                "Respond directly to chat.reply_target, including its speaker and text. "
+                "Earlier messages provide context; continue an earlier topic only when the target refers to it "
+                "or that context is needed to understand the target. "
                 "Penalize dismissive, over-promising, or off-topic replies. "
                 "If the facts are not yet confirmed, prefer the candidate that looks them up "
                 "instead of faking memory or a vague apology."

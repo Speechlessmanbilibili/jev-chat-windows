@@ -1,8 +1,10 @@
 """程度展示、分析/起草隔离和部分拒答的回归测试。"""
+import json
 import unittest
 from unittest.mock import patch
 
 from core import engine
+from core import draft
 from core.intent import INTENT_QUESTIONS, percentage, ratings
 from core.jev_client import JevError
 from core.openai_decisions import normalize_response
@@ -67,3 +69,29 @@ class IntentTests(unittest.TestCase):
             engine.analyze([('her', '请明天提交', '小李'), ('her', '你好', '小王')],
                            'colleagues', reply_to='小李', context=1)
         ask.assert_not_called()
+
+    def test_reply_target_is_shared_by_analysis_drafting_and_ranking(self):
+        messages = [('her', '晚饭去哪里吃', '小林'), ('her', '明天几点集合', '小林'),
+                    ('her', '我去买水', '小周')]
+        for reply_to, expected in ((None, '我去买水'), ('小林', '明天几点集合')):
+            with self.subTest(reply_to=reply_to), \
+                    patch.object(engine, 'ask', return_value={'answers': {}}) as ask, \
+                    patch.object(draft, '_api_key', return_value='synthetic-key'), \
+                    patch.object(draft, 'chat', return_value='["我先核对一下时间", "明天下午两点可以吗", "到地铁站后联系你"]') as generate:
+                analysis = engine.analyze(messages, 'friends', reply_to=reply_to)
+                engine.generate_replies(messages, 'friends', analysis)
+                target = analysis['reply_target']
+                self.assertEqual(target['text'], expected)
+                self.assertEqual(ask.call_args_list[0].args[0]['chat']['reply_target'], target)
+                self.assertEqual(ask.call_args_list[1].args[0]['chat']['reply_target'], target)
+                prompt = generate.call_args.args[5][0]
+                embedded = json.loads(prompt.split('<<<回复目标>>>\n')[1].split('\n<<<回复目标结束>>>')[0])
+                self.assertEqual(embedded, target)
+                self.assertIn('chat.reply_target', ask.call_args_list[1].args[1]['best_reply']['instructions'])
+
+    def test_changed_target_waits_for_new_analysis_before_drafting(self):
+        with patch.object(engine, 'ask', return_value={'answers': {}}):
+            analysis = engine.analyze([('her', '原来的话题')], 'friends')
+        with patch.object(engine, 'draft_candidates') as generate, self.assertRaises(JevError):
+            engine.generate_replies([('her', '新的话题')], 'friends', analysis)
+        generate.assert_not_called()

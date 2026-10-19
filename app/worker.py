@@ -9,7 +9,7 @@ import traceback
 import numpy as np
 
 from app import chatapps
-from app.capture import Capture, chat_area, unminimize
+from app.capture import Capture, chat_area, unminimize, window_scale
 from app.ocr import Reader, read_title
 
 
@@ -54,7 +54,7 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
             continue
         if cap is None:
             try:
-                cap = Capture(hwnd)
+                cap = Capture(hwnd, app=app)
                 started, received, waiting_warned = time.monotonic(), False, False
             except Exception as e:
                 q.put(("dead", "无法开始采集：" + (" ".join(str(e).split())[:120] or type(e).__name__)))
@@ -76,14 +76,15 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
             if full is not None:
                 received = True
                 reader, lines = None, []  # 调试视图要用，消息区没认出来时就是空的
-                area = chat_area(full)  # 每次停稳都重算：拖完窗口微信布局会晚一拍才铺好，只按尺寸变化算一次会锁死
+                scale = window_scale(hwnd)
+                area = chat_area(full, app=app, scale=scale)  # 停稳后重算，同时适应跨屏后的 DPI。
                 if area is None:
                     if not warned:
                         q.put(("status", "未能定位消息区域，请适当放大聊天窗口。"))
                         warned = True
                 else:
                     warned = False
-                    cap.set_area(area, full.shape)
+                    cap.set_area(area, full.shape, scale=scale)
                     x0, y0, x1, y1, bg, y_pane = area
                     rect = (x0, y0, x1, y1)
                     if rect != last_area:

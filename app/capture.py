@@ -26,6 +26,16 @@ u32.IsIconic.argtypes = [wintypes.HWND]
 u32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
 u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                             ctypes.c_int, ctypes.c_int, wintypes.UINT]
+_GET_DPI = getattr(u32, "GetDpiForWindow", None)
+if _GET_DPI is not None:
+    _GET_DPI.argtypes = [wintypes.HWND]
+    _GET_DPI.restype = wintypes.UINT
+
+
+def window_scale(hwnd):
+    """窗口所在屏幕的像素缩放，旧版 Windows 或无效窗口使用 100%。"""
+    dpi = _GET_DPI(hwnd) if _GET_DPI is not None else 0
+    return dpi / 96 if 96 <= dpi <= 768 else 1.0
 
 
 def find_chat_hwnd(want=None):
@@ -95,17 +105,18 @@ def unminimize(hwnd):
     return True
 
 
-def chat_area(full, header_h=60):
-    """消息列表区 (x0, y_top, x1, y_in, 面板底色, y_pane)，全靠像素锚点，不写死坐标，深浅主题通用：
+def chat_area(full, header_h=60, *, app=chatapps.DEFAULT, scale=1.0):
+    """消息列表区 (x0, y_top, x1, y_in, 面板底色, y_pane)，按像素锚点和窗口缩放定位：
     - 面板底色 = 右半边最常见的颜色（抽样算，全量 np.unique 在 2560 宽的图上要半秒）
     - 面板左/右边界 = 第一/最后一根「底色占比 > 30%」的列（联系人列表是另一种底色，占比 0）
     - y_pane = 面板第一行；会话名就印在 y_pane~y_top 这条头部里（公告条也在里面）
     - 横向分隔线 = 整行单色且非底色；输入框顶 y_in = 面板 45% 高度以下第一根；
       公告条下面那根（有的话）= 消息区顶 y_top，没有就用 header_h
     认不出（窗口太小 / 拖到一半布局没铺好）返回 None。
-    ponytail: 输入框拉高超过面板一半会认错；header_h 按 100% DPI 给的，缩放了按比例调。"""
+    header_h 为 100% DPI 下的高度。微信缺少输入区边界时，按缩放估计保留范围。"""
     H, W = full.shape[:2]
-    if H < header_h + 40 or W < 100:
+    header_h = round(header_h * scale)
+    if H < header_h + round(40 * scale) or W < round(100 * scale):
         return None
     right = full[::8, W // 2::8].reshape(-1, 3)
     vals, cnt = np.unique(right, axis=0, return_counts=True)
@@ -126,9 +137,20 @@ def chat_area(full, header_h=60):
     seps = [int(s) for i, s in enumerate(seps) if i == 0 or s - seps[i - 1] > 3]
     below = [s for s in seps if s > y0 + 0.45 * (y1 - y0)]
     y_in = below[0] if below else y1
+    if app.key == "wechat":
+        # 过滤靠近窗口底部的工具栏干扰线；可信分隔线优先，保留较矮的真实输入区。
+        min_input = round(60 * scale)
+        candidates = [s for s in below if s <= H - min_input]
+        if candidates:
+            y_in = candidates[0]
+        elif H - y1 >= min_input:
+            y_in = y1  # 消息底色在输入区上方结束，无需再次裁掉消息。
+        else:
+            reserved = max(round(120 * scale), round(0.09 * (H - y0)))
+            y_in = min(y1, H - reserved)
     above = [s for s in seps if y0 + header_h < s < y_in - 50]
     y_top = above[-1] if above else y0 + header_h
-    if x1 - x0 < 100 or y_in - y_top < 40:
+    if x1 - x0 < round(100 * scale) or y_in - y_top < round(40 * scale):
         return None
     return x0, y_top, x1, y_in, bg, y0
 
@@ -137,10 +159,11 @@ class Capture:
     """WGC 盯窗口。采集线程只做「跟上一帧比」；settled() 在画面停稳后交出整帧，中间帧（滚动动画、
     新消息滑入的半截气泡）全跳过。动图表情永远停不稳，所以最多等 max_wait 秒照样交。"""
 
-    def __init__(self, hwnd, settle=0.25, max_wait=1.0):
+    def __init__(self, hwnd, settle=0.25, max_wait=1.0, app=chatapps.DEFAULT):
         from windows_capture import WindowsCapture
 
         self.settle, self.max_wait = settle, max_wait
+        self.app, self.scale = app, window_scale(hwnd)
         self._lock = threading.Lock()
         self.last_header = None
         self.shape = self.area = self.last = self.pending = None
@@ -163,14 +186,14 @@ class Capture:
     def _accept_frame(self, full):
         """在锁内记录最新帧，消息相同但会话标题变化时仍触发识别。"""
         if self.area is None or full.shape != self.shape:
-            self.shape, self.area = full.shape, chat_area(full)
+            self.shape, self.area = full.shape, chat_area(full, app=self.app, scale=self.scale)
         if self.area is None:
             return
         x0, y0, x1, y1 = self.area[:4]  # 拿上一次的消息区做 diff 就够了，光标闪烁在输入框里，不算变化
         # 同时比较标题上部，避免正文相同的不同会话漏报；公告滚动区域不参与比较。
         chat = full[y0:y1, x0:x1]
         pane_top = self.area[5]
-        header = full[pane_top:min(y0, pane_top + 60), x0:x1]
+        header = full[pane_top:min(y0, pane_top + round(60 * self.scale)), x0:x1]
         if (self.last is not None and np.array_equal(chat, self.last)
                 and np.array_equal(header, self.last_header)):
             return
@@ -194,10 +217,12 @@ class Capture:
             full, self.pending = self.pending, None
             return full
 
-    def set_area(self, area, shape=None):
+    def set_area(self, area, shape=None, scale=None):
         with self._lock:
             if shape is None or shape == self.shape:
                 self.area = area
+                if scale is not None:
+                    self.scale = scale
 
     def alive(self):
         return not self.ctl.is_finished()
