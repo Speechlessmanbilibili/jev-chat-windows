@@ -53,7 +53,7 @@ def _status_of(exc: Exception) -> int | None:
 def _fail(exc: Exception, what: str, key: str = "") -> NoReturn:
     """SDK 抛的异常 → 一句人话的 JevError。消息过脱敏，绝不把 key 带出来。"""
     if isinstance(exc, JevError):
-        raise exc
+        raise JevError(redact_secrets(str(exc), key), exc.status) from None
     status = _status_of(exc)
     hint = {401: "密钥被拒", 403: "没有权限", 404: "模型或地址不对", 422: "请求被拒",
             429: "被限流", 529: "服务过载"}.get(status, "")

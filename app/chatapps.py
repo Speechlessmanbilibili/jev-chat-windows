@@ -46,6 +46,7 @@ class ChatApp:
     join: str                    # how OCR fragments inside one bubble are glued
     is_me: Callable[[np.ndarray], bool]
     trim_top: Callable[[np.ndarray], int] = lambda chat: 0  # rows to skip (pinned notice, ...)
+    ocr_lang: str = ""  # Windows OCR 的识别语言；空值使用系统语言顺序。
 
 
 WECHAT = ChatApp("wechat", "微信", ("weixin.exe", "wechat.exe"), "微信", (),
@@ -53,7 +54,7 @@ WECHAT = ChatApp("wechat", "微信", ("weixin.exe", "wechat.exe"), "微信", (),
 # KakaoTalk opens one window per conversation, so the roster ("카카오톡") is never the target;
 # the biggest remaining window is the chat that is actually being read.
 KAKAOTALK = ChatApp("kakaotalk", "카카오톡", ("kakaotalk.exe",), "", ("카카오톡", ""),
-                    "windows", " ", _kakao_me, _kakao_notice_rows)
+                    "windows", " ", _kakao_me, _kakao_notice_rows, ocr_lang="ko")
 
 APPS = {a.key: a for a in (WECHAT, KAKAOTALK)}
 DEFAULT = WECHAT

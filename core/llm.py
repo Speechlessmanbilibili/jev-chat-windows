@@ -8,6 +8,7 @@ OpenAI Chat Completions（`openai`）/ Anthropic Messages（`anthropic`）/ Gemi
 SDK 都在函数里 import：桌面端一次只用到其中一家，启动时没必要把另外两家的依赖也拖起来。
 """
 from __future__ import annotations
+from contextlib import closing
 
 try:  # 当模块导入 / 当脚本直接跑 都能用
     from .jev_client import JevError, _fail
@@ -56,18 +57,24 @@ def _openai(base_url, api_key, model, system, user_turns, temperature, max_token
         if not thinking:
             options["temperature"] = temperature
     try:
-        client = openai.OpenAI(base_url=base_url or None, api_key=api_key,
+        with closing(openai.OpenAI(base_url=base_url or None, api_key=api_key,
                                timeout=timeout, max_retries=2,
-                               **({"default_headers": headers} if headers else {}))
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system}] + _turns(user_turns),
-            **options,
-            stream=False,  # DeepSeek 要显式关；别家无所谓
-            **({"extra_body": extra_body} if extra_body else {}))
+                               **({"default_headers": headers} if headers else {}))) as client:
+            resp = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system}] + _turns(user_turns),
+                **options, stream=False,
+                **({"extra_body": extra_body} if extra_body else {}))
+        if not resp.choices:
+            raise JevError("起草服务未返回候选内容，请重新生成。")
+        choice = resp.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            raise JevError("起草输出已达到长度上限，请关闭思考模式或更换模型后重试。")
+        if getattr(choice.message, "refusal", None):
+            raise JevError("起草服务未接受本次请求，请调整上下文后重试。")
+        return choice.message.content or ""
     except Exception as exc:
         _fail(exc, "起草", api_key)
-    return resp.choices[0].message.content or ""
 
 
 def _anthropic(base_url, api_key, model, system, user_turns, temperature, max_tokens,
@@ -80,15 +87,16 @@ def _anthropic(base_url, api_key, model, system, user_turns, temperature, max_to
         temperature = 1.0  # 开了思考，Anthropic 只收 temperature=1
         max_tokens = max(max_tokens, _THINK_BUDGET + 1024)  # max_tokens 得装得下思考 + 正文
     try:
-        client = anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
-                                     timeout=timeout, max_retries=2)
-        message = client.messages.create(model=model, system=system,
-                                         messages=_turns(user_turns), max_tokens=max_tokens,
-                                         temperature=temperature, **extra)
+        with closing(anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
+                                         timeout=timeout, max_retries=2)) as client:
+            message = client.messages.create(model=model, system=system,
+                                             messages=_turns(user_turns), max_tokens=max_tokens,
+                                             temperature=temperature, **extra)
+        if getattr(message, "stop_reason", None) == "max_tokens":
+            raise JevError("起草输出已达到长度上限，请关闭思考模式或更换模型后重试。")
+        return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
     except Exception as exc:
         _fail(exc, "起草", api_key)
-    # 开了思考的话前面还有 thinking 块，只取文本块
-    return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
 
 
 def _gemini_client(base_url, api_key, timeout):
@@ -112,10 +120,11 @@ def _gemini(base_url, api_key, model, system, user_turns, temperature, max_token
             thinking_config=None if thinking else types.ThinkingConfig(thinking_budget=0))
         contents = [types.Content(role=m["role"], parts=[types.Part(text=m["content"])])
                     for m in _turns(user_turns, assistant="model")]  # Gemini 那边助手叫 model
-        resp = client.models.generate_content(model=model, contents=contents, config=config)
+        with closing(client):
+            resp = client.models.generate_content(model=model, contents=contents, config=config)
+        return resp.text or ""
     except Exception as exc:
         _fail(exc, "起草", api_key)
-    return resp.text or ""
 
 
 def list_models(protocol: str, base_url: str | None, api_key: str,
@@ -125,26 +134,27 @@ def list_models(protocol: str, base_url: str | None, api_key: str,
         import anthropic
 
         try:
-            client = anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
-                                         timeout=timeout, max_retries=1)
-            ids = [m.id for m in client.models.list()]
+            with closing(anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
+                                             timeout=timeout, max_retries=1)) as client:
+                ids = [m.id for m in client.models.list()]
         except Exception as exc:
             _fail(exc, "取模型列表", api_key)
     elif protocol == "gemini":
         try:
             client, _ = _gemini_client(base_url, api_key, timeout)
             # 名字带 models/ 前缀，调用时用不上，剥掉
-            ids = [str(m.name).removeprefix("models/") for m in client.models.list() if m.name]
+            with closing(client):
+                ids = [str(m.name).removeprefix("models/") for m in client.models.list() if m.name]
         except Exception as exc:
             _fail(exc, "取模型列表", api_key)
     else:
         import openai
 
         try:
-            client = openai.OpenAI(base_url=base_url or None, api_key=api_key,
+            with closing(openai.OpenAI(base_url=base_url or None, api_key=api_key,
                                    timeout=timeout, max_retries=1,
-                                   **({"default_headers": headers} if headers else {}))
-            ids = [m.id for m in client.models.list()]
+                                   **({"default_headers": headers} if headers else {}))) as client:
+                ids = [m.id for m in client.models.list()]
         except Exception as exc:
             _fail(exc, "取模型列表", api_key)
     return sorted(set(ids))
@@ -183,7 +193,7 @@ if __name__ == "__main__":
                                   _t.SimpleNamespace(name="models/gemini-1")]}[kind]
             models = _t.SimpleNamespace(list=lambda **_: listing, generate_content=call)
             return _t.SimpleNamespace(
-                models=models, messages=_t.SimpleNamespace(create=call),
+                close=lambda: None, models=models, messages=_t.SimpleNamespace(create=call),
                 chat=_t.SimpleNamespace(completions=_t.SimpleNamespace(create=call)))
         return make
 

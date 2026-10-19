@@ -30,10 +30,9 @@ Measured on the same window:
   `app/ocr.py` swaps one for the other. It is offline like RapidOCR: the recognizer comes from the
   OS language pack, nothing leaves the machine. Words are grouped into runs and split where a wide
   horizontal gap appears, which is what separates a right-aligned own message from the bubble
-  beside it. Frames are upscaled 2× before recognition; that removes the stray one-character
-  fragments for +30 ms (3× brings them back).
-- **`app/ocr.py`** — engine chosen per app, with a silent fallback to RapidOCR when the OS has no
-  recognizer for the language. Text printed directly on the pane background is treated as a label
+  beside it. Frames are scaled up to 2× within the Windows OCR image dimension limit.
+- **`app/ocr.py`** — the OCR backend and recognition language are selected per app. KakaoTalk
+  explicitly uses Korean; a missing recognizer produces an installation message. Text printed directly on the pane background is treated as a label
   (the sender's name, a timestamp), not a message: WeChat draws that name in grey, KakaoTalk draws
   it as dark as the message text, so the old grey-only rule leaked the name into every turn.
 - **`app/capture.py`** — `find_chat_hwnd()` recognizes any known app and returns the window plus its

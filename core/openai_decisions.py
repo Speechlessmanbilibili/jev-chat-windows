@@ -40,7 +40,7 @@ def convert_questions(questions: dict) -> list[dict]:
 
 def _number(value, lower: float, upper: float) -> float:
     if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or not lower <= value <= upper):
+            or not lower <= value <= upper or not math.isfinite(value)):
         raise JevError("Decisions 返回了无效数值")
     return float(value)
 
@@ -48,14 +48,14 @@ def _number(value, lower: float, upper: float) -> float:
 def normalize_response(response: dict, questions: dict) -> dict:
     """按名称读取答案；拒答保留为空，格式错误交由引擎的错误处理流程处理。"""
     answers, refused, seen = {}, [], set()
-    raw_answers = response.get("answers")
+    raw_answers = response.get("answers") if isinstance(response, dict) else None
     if not isinstance(raw_answers, list):
         raise JevError("Decisions 响应缺少答案数组")
     for answer in raw_answers:
         if not isinstance(answer, dict):
             raise JevError("Decisions 答案格式错误")
         name = answer.get("name")
-        if name not in questions or name in seen:
+        if not isinstance(name, str) or name not in questions or name in seen:
             raise JevError("Decisions 返回了未知或重复的题目名称")
         seen.add(name)
         if answer.get("type") == "refusal":
@@ -70,7 +70,12 @@ def normalize_response(response: dict, questions: dict) -> dict:
             answers[name] = {"type": "noul", "noul": _number(answer.get("probability"), 0, 1)}
             continue
         probabilities = {}
-        for probability in answer.get("probabilities", []):
+        raw_probabilities = answer.get("probabilities", [])
+        if not isinstance(raw_probabilities, list):
+            raise JevError("Decisions 返回的概率列表格式错误")
+        for probability in raw_probabilities:
+            if not isinstance(probability, dict):
+                raise JevError("Decisions 返回的概率项格式错误")
             value = probability.get("value")
             if kind == "choice":
                 if not isinstance(value, str) or value not in question["criteria"]:

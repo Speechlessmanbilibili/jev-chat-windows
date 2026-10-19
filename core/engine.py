@@ -1,5 +1,6 @@
 """独立的意图分析和按需回复生成入口。"""
 from __future__ import annotations
+from datetime import datetime
 
 from .draft import draft_candidates
 from .intent import INTENT_QUESTIONS, guidance_text
@@ -23,7 +24,8 @@ def analyze(messages: list, relationship: str, timeout: float = 30, context: int
                    INTENT_QUESTIONS, timeout=timeout, provider=jev_provider, model=jev_model)
     return {"answers": response.get("answers") or {}, "usage": response.get("usage") or {},
             "refused": response.get("refused") or [], "reply_to": reply_to,
-            "analyzed_text": latest["text"], "analyzed_sender": latest.get("name")}
+            "analyzed_text": latest["text"], "analyzed_sender": latest.get("name"),
+            "analyzed_at": datetime.now().strftime("%H:%M")}
 
 
 def generate_replies(messages: list, relationship: str, analysis: dict,

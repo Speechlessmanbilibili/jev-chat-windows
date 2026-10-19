@@ -117,6 +117,7 @@ def main() -> int:
     # 演示使用 OpenAI Decisions 判断和 DeepSeek 起草，示例密钥仅保存在内存。
     configured = "" if args.state == "setup" else "demo-key"
     demo_settings = {"relationship": "friends", "context": 10,
+                     "lang": settings.language(),
                      "jev_key": configured, "llm_key": configured,
                      "jev_provider": "openai", "jev_model": "gpt-6-luna",
                      "draft_provider": "deepseek", "draft_model": "deepseek-flash",
@@ -128,11 +129,13 @@ def main() -> int:
                            jev_key_text=None, jev_model_text=None, draft_provider_text=None,
                            llm_key_text=None, draft_model_text=None, draft_base_url_text=None,
                            reply_target_on=None, style_text=None, thinking_on=None,
-                           check_update_on=None, debug_view_on=None):
+                           check_update_on=None, debug_view_on=None, lang_text=None):
         if relationship_text:
             demo_settings["relationship"] = relationship_text
         if context_n is not None:
             demo_settings["context"] = context_n
+        if lang_text is not None:
+            demo_settings["lang"] = lang_text
         for name, value in (("jev_provider", jev_provider_text), ("jev_model", jev_model_text),
                             ("draft_provider", draft_provider_text), ("draft_model", draft_model_text),
                             ("draft_base_url", draft_base_url_text), ("style", style_text)):
@@ -169,6 +172,7 @@ def main() -> int:
         llm_key=lambda provider=None: demo_settings["llm_key"],
         relationship=lambda: demo_settings["relationship"],
         context=lambda: demo_settings["context"],
+        language=lambda: demo_settings["lang"],
         jev_provider=lambda: demo_settings["jev_provider"],
         jev_model=lambda: demo_settings["jev_model"],
         draft_provider=lambda: demo_settings["draft_provider"],

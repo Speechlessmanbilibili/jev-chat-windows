@@ -2,6 +2,7 @@
 """找聊天窗口 + Windows Graphics Capture 盯着它 + 从帧里定位消息区。帧全程内存，绝不落盘。"""
 import ctypes
 import os
+import threading
 import time
 from ctypes import wintypes
 
@@ -10,6 +11,21 @@ import numpy as np
 from app import chatapps
 
 u32 = ctypes.windll.user32
+k32 = ctypes.windll.kernel32
+# 进程和窗口句柄在 64 位 Windows 上必须保留指针宽度。
+k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+k32.OpenProcess.restype = wintypes.HANDLE
+k32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                          wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
+k32.CloseHandle.argtypes = [wintypes.HANDLE]
+u32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+u32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+u32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+u32.IsWindowVisible.argtypes = [wintypes.HWND]
+u32.IsIconic.argtypes = [wintypes.HWND]
+u32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+u32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                            ctypes.c_int, ctypes.c_int, wintypes.UINT]
 
 
 def find_chat_hwnd(want=None):
@@ -47,7 +63,7 @@ def find_chat_hwnd(want=None):
 
     u32.EnumWindows(cb, 0)
     if not found:
-        raise RuntimeError("没找到聊天窗口，开着吗？")
+        raise RuntimeError("未找到受支持的聊天窗口，请打开客户端和会话窗口。")
     for app in chatapps.APPS.values():
         mine = [f for f in found if f[3] is app]
         if not mine:
@@ -56,10 +72,12 @@ def find_chat_hwnd(want=None):
             hit = next((f for f in mine if f[1] == app.main_title), None)
             if hit:
                 return hit[0], app
-        rooms = [f for f in mine if f[1] not in app.skip_titles] or mine
+        rooms = [f for f in mine if f[1] not in app.skip_titles]
+        if not rooms:
+            continue
         best = max(rooms, key=lambda f: f[2])
         return best[0], app
-    raise RuntimeError("没找到聊天窗口，开着吗？")
+    raise RuntimeError("未找到受支持的聊天窗口，请打开客户端和会话窗口。")
 
 
 def find_wechat_hwnd():
@@ -87,14 +105,20 @@ def chat_area(full, header_h=60):
     认不出（窗口太小 / 拖到一半布局没铺好）返回 None。
     ponytail: 输入框拉高超过面板一半会认错；header_h 按 100% DPI 给的，缩放了按比例调。"""
     H, W = full.shape[:2]
+    if H < header_h + 40 or W < 100:
+        return None
     right = full[::8, W // 2::8].reshape(-1, 3)
     vals, cnt = np.unique(right, axis=0, return_counts=True)
     bg = vals[cnt.argmax()]
     isbg = np.abs(full.astype(int) - bg).sum(-1) <= 6
     col = isbg[H // 4: H * 3 // 4].mean(0)
+    if not np.any(col > 0.3):
+        return None
     x0 = int(np.argmax(col > 0.3))
     x1 = W - int(np.argmax(col[::-1] > 0.3))
     row = isbg[:, x0:x1].mean(1)
+    if not np.any(row > 0.9):
+        return None
     y0 = int(np.argmax(row > 0.9))
     y1 = H - int(np.argmax(row[::-1] > 0.9))
     band = full[y0:y1, x0:x1].astype(int)
@@ -117,6 +141,8 @@ class Capture:
         from windows_capture import WindowsCapture
 
         self.settle, self.max_wait = settle, max_wait
+        self._lock = threading.Lock()
+        self.last_header = None
         self.shape = self.area = self.last = self.pending = None
         self.t = self.t0 = 0.0
         # 包装层默认 cursor_capture=True，会去调 SetIsCursorCaptureEnabled。
@@ -129,18 +155,27 @@ class Capture:
 
     def on_frame_arrived(self, frame, control):
         full = np.ascontiguousarray(frame.frame_buffer[:, :, :3][:, :, ::-1])  # BGRA → RGB；缓冲区回调后就没了，必须拷
-        if full.max() == 0:
+        if not full.size or full.max() == 0:
             return
+        with self._lock:
+            self._accept_frame(full)
+
+    def _accept_frame(self, full):
+        """在锁内记录最新帧，消息相同但会话标题变化时仍触发识别。"""
         if self.area is None or full.shape != self.shape:
             self.shape, self.area = full.shape, chat_area(full)
         if self.area is None:
             return
         x0, y0, x1, y1 = self.area[:4]  # 拿上一次的消息区做 diff 就够了，光标闪烁在输入框里，不算变化
-        # ponytail: diff 不含头部——公告条会滚动，带上它就永远停不稳。切会话时消息区必然也变，照样出帧。
+        # 同时比较标题上部，避免正文相同的不同会话漏报；公告滚动区域不参与比较。
         chat = full[y0:y1, x0:x1]
-        if self.last is not None and np.array_equal(chat, self.last):
+        pane_top = self.area[5]
+        header = full[pane_top:min(y0, pane_top + 60), x0:x1]
+        if (self.last is not None and np.array_equal(chat, self.last)
+                and np.array_equal(header, self.last_header)):
             return
         self.last = chat
+        self.last_header = header
         if self.pending is None:
             self.t0 = time.perf_counter()
         self.pending, self.t = full, time.perf_counter()
@@ -150,13 +185,19 @@ class Capture:
 
     def settled(self):
         """停稳了就返回整帧，否则 None。"""
-        if self.pending is None:
-            return None
-        now = time.perf_counter()
-        if now - self.t < self.settle and now - self.t0 < self.max_wait:
-            return None
-        full, self.pending = self.pending, None
-        return full
+        with self._lock:
+            if self.pending is None:
+                return None
+            now = time.perf_counter()
+            if now - self.t < self.settle and now - self.t0 < self.max_wait:
+                return None
+            full, self.pending = self.pending, None
+            return full
+
+    def set_area(self, area, shape=None):
+        with self._lock:
+            if shape is None or shape == self.shape:
+                self.area = area
 
     def alive(self):
         return not self.ctl.is_finished()

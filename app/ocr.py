@@ -9,8 +9,8 @@ from rapidocr_onnxruntime import RapidOCR
 
 from app.chatapps import DEFAULT, ChatApp
 
-_ENGINES: dict = {}   # backend name -> engine, shared per process
-_FELL_BACK = set()    # backends that failed once; don't retry every frame
+_ENGINES: dict = {}   # 按识别后端及语言缓存实例。
+_FELL_BACK = set()    # 记录初始化失败的后端，避免逐帧重复初始化。
 
 
 def _engine(app: ChatApp = DEFAULT):
@@ -18,20 +18,23 @@ def _engine(app: ChatApp = DEFAULT):
     det_limit_type 默认 'min' 会把小图放大到短边 736，裁小反而更慢；必须 'max'。
 
     RapidOCR 的内置模型只有中英文，韩日文全是乱码，所以这类界面走 Windows 自带 OCR
-    （离线、随系统语言包装好，见 app/ocr_windows.py）；没有对应识别器就退回 RapidOCR。"""
-    want = app.ocr if app.ocr not in _FELL_BACK else "rapidocr"
-    if want not in _ENGINES:
+    （离线、随系统语言包装好，见 app/ocr_windows.py）；缺少识别器时显示安装提示。"""
+    key = (app.ocr, app.ocr_lang)
+    if key in _FELL_BACK:
+        raise RuntimeError("缺少所需的 Windows OCR 语言组件，请在系统语言设置中安装后重新开启采集。")
+    if key not in _ENGINES:
+        want = app.ocr
         if want == "windows":
             try:
                 from app.ocr_windows import WindowsOcr
-                _ENGINES[want] = WindowsOcr()
-            except Exception:
-                _FELL_BACK.add("windows")
-                return _engine(app)
+                _ENGINES[key] = WindowsOcr(app.ocr_lang or None)
+            except Exception as exc:
+                _FELL_BACK.add(key)
+                raise RuntimeError("缺少所需的 Windows OCR 语言组件，请在系统语言设置中安装后重新开启采集。") from exc
         else:
-            _ENGINES[want] = RapidOCR(intra_op_num_threads=4, det_limit_type="max",
+            _ENGINES[key] = RapidOCR(intra_op_num_threads=4, det_limit_type="max",
                                       det_limit_side_len=4000)
-    return _ENGINES[want]
+    return _ENGINES[key]
 
 
 def read_title(header, app: ChatApp = DEFAULT):
@@ -56,7 +59,9 @@ def who_said(chat, box, app: ChatApp = DEFAULT):
     哪种底色算 "me" 由 app.is_me 决定（微信绿 / KakaoTalk 黄）。
     墨高 = 框里最长一段连续有字的行数（OCR 框对小字有固定 padding、还会蹭到上下行，不能拿框高比大小）。"""
     xs, ys = [p[0] for p in box], [p[1] for p in box]
-    reg = chat[int(min(ys)):int(max(ys)), int(min(xs)):int(max(xs))].astype(int)
+    height, width = chat.shape[:2]
+    reg = chat[max(0, int(min(ys))):min(height, int(max(ys))),
+               max(0, int(min(xs))):min(width, int(max(xs)))].astype(int)
     if reg.size == 0:
         return None, None, 0
     vals, cnt = np.unique(reg.reshape(-1, 3), axis=0, return_counts=True)
@@ -97,9 +102,12 @@ class Reader:
     def read(self, chat, pane_bg):
         """→ [(who, name, text, y)]，同一气泡的多行已合并。who ∈ me/her；name 群聊里是发言人，单聊 None。
         顺带把每个框的分类记进 self.last_boxes（调试视图画框用，几十个 tuple，不开也不亏）。"""
-        skip = self.app.trim_top(chat)   # 群聊置顶公告等：不是消息，整块跳过
+        skip = max(0, min(chat.shape[0], self.app.trim_top(chat)))
         if skip:
             chat = chat[skip:]
+        if not chat.size:
+            self.last_boxes, self.last_ms = [], 0
+            return []
         t0 = time.perf_counter()
         res, _ = self.ocr(chat, use_cls=False)
         self.last_ms = int((time.perf_counter() - t0) * 1000)
@@ -112,7 +120,10 @@ class Reader:
         for box, text, _ in sorted(res or [], key=lambda r: r[0][0][1]):
             kind, bg, h = who_said(chat, box, self.app)
             xs, ys = [p[0] for p in box], [p[1] for p in box]
-            rect = (int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)))
+            rect = (int(min(xs)), int(min(ys)) + skip, int(max(xs)), int(max(ys)) + skip)
+            if bg is None:
+                self.last_boxes.append(rect + ("image", text))
+                continue
             # 印在面板底色上的字都不是消息：气泡自带底色。微信的发言人名是灰字，
             # KakaoTalk 的是深色（对比度跟正文一样），所以不能只看 kind == "gray"。
             on_pane = np.abs(bg - pane_bg).sum() <= 6
@@ -142,17 +153,34 @@ class Reader:
         return [(w, n, t, y) for w, n, t, y, _ in lines]
 
     def new_lines(self, lines):
-        """去重（滚动不重复）→ 这一帧里真正新出现的 [(who, name, text)]。
-        本帧有已知行时只要已知行下方的：往上滚翻出来的旧消息在已知行上方，不算。
-        本帧一行已知的都没有（大图把旧文字全顶出去了、切了聊天、滚远了）：全算，宁可多算不能漏。
-        ponytail: 同一人连发两句一模一样的会吞一句——对触发分析无害。"""
-        known_y = [y for w, n, t, y in lines if self._seen(w, n, t)]
-        floor = max(known_y) if known_y else -1
-        new = [(w, n, t) for w, n, t, y in lines if y > floor and not self._seen(w, n, t)]
-        self.seen.extend((w, n, t) for w, n, t, _ in lines if not self._seen(w, n, t))
+        """按连续消息序列对齐，保留重复消息和不同发言人的相似内容。"""
+        current = [(w, n, t) for w, n, t, _ in lines]
+        if not current:
+            return []
+        def matches(a, b, fuzzy=False):
+            return (a[0] == b[0] and (not a[1] or not b[1] or a[1] == b[1])
+                    and (a[2] == b[2] or (fuzzy and similar(a[2], b[2]))))
+        overlap = 0
+        for size in range(min(len(self.seen), len(current)), 0, -1):
+            if all(matches(a, b) for a, b in zip(self.seen[-size:], current[:size])):
+                overlap = size
+                break
+        if not overlap and self.seen:
+            # 先识别完整历史片段，避免相似的新旧话题造成错误的尾部匹配。
+            for start in range(max(0, len(self.seen) - len(current) + 1)):
+                segment = self.seen[start:start + len(current)]
+                if len(segment) == len(current) and all(matches(a, b, True) for a, b in zip(segment, current)):
+                    return []
+            for size in range(min(len(self.seen), len(current)), 1, -1):
+                pairs = list(zip(self.seen[-size:], current[:size]))
+                if any(matches(a, b) for a, b in pairs) and all(matches(a, b, True) for a, b in pairs):
+                    overlap = size
+                    break
+        if not overlap and self.seen:
+            # 当前画面与已知历史重叠但未到末尾，属于回看旧消息。
+            if any(matches(a, b) for a in self.seen for b in current):
+                return []
+        new = current[overlap:]
+        self.seen.extend(new)
         del self.seen[:-500]
         return new
-
-    def _seen(self, who, name, text):
-        # 名字不参与判重：名字行滚出画面后同一条消息会从 her(LO) 变成 her，不能算新消息
-        return any(w == who and similar(t, text) for w, _, t in self.seen)

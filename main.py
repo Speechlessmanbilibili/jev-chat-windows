@@ -29,6 +29,8 @@ state = {"area": None, "hwnd": None, "chat": ""}
 results = queue.Queue()
 draft_results = queue.Queue()
 update_result = queue.Queue()  # 独立小队列，别跟 results 的 (kind, r, title, revision) 形状搅在一起
+child = dbg = None
+capture_on = debug_on = None
 
 
 def chat_of(title):
@@ -55,10 +57,12 @@ def result_for(title):
 
 
 def fill_reply(text):
+    if state["chat"] != ov.current_chat():
+        raise RuntimeError(T("请先在聊天客户端中打开当前会话。"))
     if state["hwnd"] is None:  # 子进程重开过，hwnd 可能换了，用最新的
-        raise RuntimeError(T("未找到聊天窗口，请确认已经打开"))
+        raise RuntimeError(T("未找到聊天窗口，请确认客户端及会话窗口已打开。"))
     if state["area"] is None:
-        raise RuntimeError(T("输入区域尚不可用，请确认聊天窗口可见（不要最小化）"))
+        raise RuntimeError(T("输入区域尚未识别，请保持聊天窗口可见并等待识别完成。"))
     if settings.reply_target() and ov.at_prefix_enabled():
         target = target_of(ov.current_chat())  # 填进去的是界面上正看着的那个会话的对象
         if target:
@@ -115,17 +119,16 @@ def on_toggle_capture(on):
             state["hwnd"], found = find_chat_hwnd()
             state["app"] = found.key
         except RuntimeError:
-            ov.set_capture(False, "未找到聊天窗口，打开后再开启采集")
+            ov.set_capture(False, "未找到聊天窗口，请打开受支持的聊天客户端后开启采集。")
             return
         child = spawn_worker()
     capture_on.set()
 
 
-def analyze_bg(msgs, title, revision, reply_to=None):
+def analyze_bg(msgs, title, revision, reply_to=None, options=None):
     """后台线程只跑网络调用，结果丢队列；UI 只在主线程的 tick 里动（Qt 不能跨线程碰）。"""
     try:
-        options = dict(relationship=settings.relationship(), context=settings.context(),
-                       jev_provider=settings.jev_provider(), jev_model=settings.jev_model() or None)
+        options = options or settings.analysis_options()
         result = analyze(msgs, reply_to=reply_to, **options)
         result.update(_messages=msgs, _options=options, _rev=revision)
         results.put(("ok", result, title, revision))
@@ -142,7 +145,7 @@ def check_update_bg():
 
 def start_analyze(title, msgs):
     if not settings.has_jev_key():
-        ov.set_status("请先在设置中配置模型", "warning")
+        ov.set_status("请先配置分析模型及 API 密钥。", "warning")
         return
     chat = chat_of(title)
     if chat["analysis_busy"]:
@@ -156,7 +159,7 @@ def start_analyze(title, msgs):
         ov.set_busy(True)
     reply_to = target_of(title) if settings.reply_target() else None  # 开关关着就是今天的行为
     threading.Thread(target=analyze_bg, args=(msgs, title, chat_of(title)["rev"], reply_to),
-                     daemon=True).start()
+                     kwargs={"options": settings.analysis_options()}, daemon=True).start()
 
 
 def invalidate_chat(title):
@@ -171,13 +174,10 @@ def invalidate_chat(title):
         ov.invalidate_replies()
 
 
-def draft_bg(title, revision, analysis):
+def draft_bg(title, revision, analysis, options=None):
     try:
         result = generate_replies(analysis["_messages"], analysis=analysis,
-                                 **analysis["_options"], model=settings.draft_model() or None,
-                                 provider=settings.draft_provider(),
-                                 base_url=settings.draft_base_url() or None,
-                                 style=settings.style(), thinking=settings.thinking())
+                                 **analysis["_options"], **(options or settings.draft_options()))
         draft_results.put(("ok", result, title, revision))
     except Exception as e:
         draft_results.put(("err", f"{T('起草失败：')}{e}", title, revision))
@@ -203,7 +203,8 @@ def on_generate(title):
     chat["draft_rev"] = chat["rev"]
     result.update(draft_busy=True, draft_error="", candidates=[])
     ov.set_draft_busy(True)
-    threading.Thread(target=draft_bg, args=(title, chat["rev"], dict(result)), daemon=True).start()
+    threading.Thread(target=draft_bg, args=(title, chat["rev"], dict(result)),
+                     kwargs={"options": settings.draft_options()}, daemon=True).start()
 
 
 def on_target_change(title, name):
@@ -215,6 +216,39 @@ def on_target_change(title, name):
     if not any(m[0] == "her" for m in msgs):
         return
     start_analyze(title, msgs)
+
+
+def on_analysis_settings_changed():
+    """分析配置变化后使旧结果失效，仅重新分析客户端当前会话。"""
+    for title in chats:
+        invalidate_chat(title)
+        chat_of(title)["pending"] = None
+    ov.set_busy(False)
+    title = state["chat"]
+    if title:
+        history = list(chat_of(title)["history"])
+        if history and history[-1][0] == "her":
+            start_analyze(title, history)
+
+
+def capture_stopped(reason):
+    """统一处理正常停止和采集子进程异常退出。"""
+    global child
+    state.update(area=None, hwnd=None)
+    if capture_on is not None:
+        capture_on.clear()
+    for title in chats:
+        invalidate_chat(title)
+        chat_of(title).update(pending=None, analysis_busy=False, analysis_rev=None)
+    ov.invalidate_replies()
+    ov.set_busy(False)
+    ov.set_capture(False, reason)
+    ov.log(reason)
+    process, child = child, None
+    if process is not None:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=0.2)
 
 
 def drain():
@@ -248,20 +282,11 @@ def drain():
             ov.set_capture(True)
             continue
         if kind == "dead":  # 采集彻底停了（微信关了之类），这才是真的要清状态
-            state["area"] = None
-            for title in chats:
-                invalidate_chat(title)
-                chat_of(title)["pending"] = None
-            ov.invalidate_replies()
-            ov.set_busy(False)
-            ov.set_capture(False, msg[1])
-            ov.log(msg[1])
-            if child is not None:  # 子进程已经不干活了，收掉引用，下次打开开关重开一个
-                child.terminate()
-                child.join()
-                child = None
+            capture_stopped(msg[1])
             continue
         _, title, new, area = msg
+        if not new:
+            continue
         state["area"] = area
         chat = chat_of(title)
         invalidate_chat(title)
@@ -280,18 +305,22 @@ def drain():
             chat["pending"] = None
             if title == ov.current_chat():
                 ov.set_busy(False)
-                ov.set_status("你已回复，等待对方的新消息")
+                ov.set_status("已检测到本人回复，等待对方的新消息。")
 
 
 def tick():
     try:
         drain()
+        if child is not None and not child.is_alive():
+            capture_stopped("采集进程已退出，请重新开启采集。")
         while not update_result.empty():
             latest, url = update_result.get()
             ov.set_update(latest, url)
         while not results.empty():
             kind, r, title, revision = results.get()
             chat = chat_of(title)
+            if chat["analysis_rev"] is not None and revision != chat["analysis_rev"]:
+                continue
             chat["analysis_busy"] = False
             if chat["pending"] is not None:
                 msgs, chat["pending"] = chat["pending"], None
@@ -307,7 +336,7 @@ def tick():
                 if title == ov.current_chat():
                     ov.set_busy(False)
                     ov.set_status("分析失败，请检查网络和服务设置；新消息到来后会重试。", "error")
-                ov.log(r)
+                ov.log(r, chat=title)
         while not draft_results.empty():
             kind, result, title, revision = draft_results.get()
             chat = chat_of(title)
@@ -340,19 +369,19 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     ov = Overlay(on_fill=fill_reply, on_toggle_capture=on_toggle_capture,
                  on_target_change=on_target_change, on_toggle_debug=set_debug,
                  on_language_changed=on_language_changed, on_generate=on_generate,
-                 result_of=result_for)
+                 result_of=result_for, on_analysis_settings_changed=on_analysis_settings_changed)
     try:
         state["hwnd"], found = find_chat_hwnd()
         state["app"] = found.key
     except RuntimeError:
-        ov.set_capture(False, "未找到聊天窗口，打开后再开启采集")
+        ov.set_capture(False, "未找到聊天窗口，请打开受支持的聊天客户端后开启采集。")
     else:
         capture_on.set()
         child = spawn_worker()
     if settings.debug_view():  # 上次开着就直接开回来
         set_debug(True)
     if not settings.has_jev_key():
-        ov.set_status("请先在设置中配置模型", "warning")
+        ov.set_status("请先配置分析模型及 API 密钥。", "warning")
         ov.after(0, ov.open_settings)
     if settings.check_update() and update.parse_version(VERSION):  # 开发版没有版本号，不查也不烦源码用户
         threading.Thread(target=check_update_bg, daemon=True).start()
@@ -362,3 +391,5 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
     finally:
         if child is not None:
             child.terminate()
+            child.join(timeout=0.2)
+        q.close()

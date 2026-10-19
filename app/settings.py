@@ -11,6 +11,9 @@ import ctypes
 import json
 import os
 import sys  # 只为下面这一处：打包后 __file__ 指向临时解包目录，config.json 得放在 exe 旁边才存得住
+import tempfile
+import threading
+from functools import wraps
 
 from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_PROVIDERS, LEGACY, key_env
 
@@ -21,6 +24,25 @@ _DEFAULT_RELATIONSHIP = "romantic partners"
 _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openai"
 _DEFAULT_DRAFT = "deepseek"
+_CONFIG_LOCK = threading.RLock()
+
+
+def _locked(function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        with _CONFIG_LOCK:
+            return function(*args, **kwargs)
+    return call
+
+
+def _text(name, default=""):
+    value = _read(name)
+    return value.strip() if isinstance(value, str) and value.strip() else default
+
+
+def _flag(name, default=False):
+    value = _read(name, default)
+    return value if isinstance(value, bool) else default
 
 
 def _read(name: str, default=None):
@@ -34,23 +56,25 @@ def _read(name: str, default=None):
     return default if value is None else value
 
 def relationship() -> str:
-    return str(_read("relationship") or _DEFAULT_RELATIONSHIP)
+    return _text("relationship", _DEFAULT_RELATIONSHIP)
 
 def context() -> int:
     """参考上下文条数：起草和判断各看最近多少条消息。3~30，缺失/脏数据一律退默认值。"""
     try:
-        n = int(_read("context", _DEFAULT_CONTEXT))
-    except (TypeError, ValueError):
+        value = _read("context", _DEFAULT_CONTEXT)
+        n = _DEFAULT_CONTEXT if isinstance(value, bool) else int(value)
+    except (TypeError, ValueError, OverflowError):
         return _DEFAULT_CONTEXT
     return max(3, min(30, n))
 
 def style() -> str:
     """用户自己描述的说话风格（可选，自由文本），只喂给起草模型。默认空 = 只照着最近的消息模仿。"""
-    return str(_read("style") or "")
+    return _text("style")
 
 def language() -> str:
     """配置中选择的界面语言；启动环境变量的覆盖由 i18n 处理。"""
-    return str(_read("lang") or "zh").strip().lower()
+    value = _text("lang", "zh").lower()
+    return value if value in ("zh", "ko") else "zh"
 
 def jev_provider() -> str:
     """判断来源；新配置默认使用 OpenAI Decisions。"""
@@ -59,7 +83,7 @@ def jev_provider() -> str:
 
 def jev_model() -> str:
     """判断模型 id；空 = 用该来源的默认模型。"""
-    return str(_read("jev_model") or "") or JEV_PROVIDERS[jev_provider()].default
+    return _text("jev_model", JEV_PROVIDERS[jev_provider()].default)
 
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
@@ -71,27 +95,27 @@ def draft_provider_name() -> str:
 
 def draft_model() -> str:
     """起草模型 id；空 = 用该来源的默认模型（有的来源没有默认，那就得自己选）。"""
-    return str(_read("draft_model") or "") or DRAFT_PROVIDERS[draft_provider()].default
+    return _text("draft_model", DRAFT_PROVIDERS[draft_provider()].default)
 
 def draft_base_url() -> str:
     """自定义来源的 Base URL；其余来源用表里的，这里返回空。"""
-    return str(_read("draft_base_url") or "") if draft_provider() in CUSTOM else ""
+    return _text("draft_base_url") if draft_provider() in CUSTOM else ""
 
 def reply_target() -> bool:
     """群聊指定回复对象：开了才在界面上选回复给谁、才把对象喂给模型。默认关。"""
-    return bool(_read("reply_target", False))
+    return _flag("reply_target")
 
 def thinking() -> bool:
     """起草思考模式，默认关；支持的来源及模型见 core.providers.THINKING。"""
-    return bool(_read("thinking", False))
+    return _flag("thinking")
 
 def check_update() -> bool:
     """启动时要不要去 GitHub 查一次最新版本号：默认开，只出这一次网，设置里能关。"""
-    return bool(_read("check_update", True))
+    return _flag("check_update", True)
 
 def debug_view() -> bool:
     """调试视图：另开一个窗口实时画识别框。默认关，开了子进程才往队列里送帧。"""
-    return bool(_read("debug_view", False))
+    return _flag("debug_view")
 
 def _read_env(env_name: str) -> str:
     """进程环境优先；没有就读注册表并带进进程环境，之后 core/ 里按 os.environ 读就有了。"""
@@ -114,14 +138,12 @@ def _get_key(env_name: str) -> str:
 
 def _set_key(env_name: str, value: str) -> None:
     """只写进程环境 + HKCU\\Environment，不写任何文件。"""
-    os.environ[env_name] = value
-    try:
+    if os.name == "nt":
         import winreg
 
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment", 0, winreg.KEY_SET_VALUE) as k:
             winreg.SetValueEx(k, env_name, 0, winreg.REG_SZ, value)
-    except Exception:
-        pass  # 非 Windows（本机 Mac 开发）走不到，忽略
+    os.environ[env_name] = value
 
 
 def _notify_env() -> None:
@@ -152,6 +174,7 @@ def has_llm_key() -> bool:
 
 has_key = has_jev_key  # 旧名字：界面上「配没配好」问的就是判断模型这把 key
 
+@_locked
 def save(relationship_text: str | None = None, context_n: int | None = None, *,
          jev_provider_text: str | None = None, jev_key_text: str | None = None,
          jev_model_text: str | None = None, draft_provider_text: str | None = None,
@@ -193,5 +216,28 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
     lang = _read("lang") if lang_text is None else lang_text.strip().lower()
     if lang is not None:
         data["lang"] = lang
-    with open(_CONFIG, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(_CONFIG),
+                                         prefix=".jevchat-", suffix=".tmp", delete=False) as f:
+            temporary = f.name
+            json.dump(data, f, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporary, _CONFIG)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)  # 清理本次写入产生的临时文件。
+
+
+@_locked
+def analysis_options() -> dict:
+    """同一次分析使用一致的配置快照。"""
+    return dict(relationship=relationship(), context=context(),
+                jev_provider=jev_provider(), jev_model=jev_model() or None)
+
+
+@_locked
+def draft_options() -> dict:
+    return dict(provider=draft_provider(), model=draft_model() or None,
+                base_url=draft_base_url() or None, style=style(), thinking=thinking())

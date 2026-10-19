@@ -68,7 +68,7 @@ def percentage(score):
     """0–4 的加权分数线性转换为整数百分比，按四舍五入处理。"""
     if isinstance(score, bool) or not isinstance(score, (int, float)):
         return None
-    if not isfinite(score) or not 0 <= score <= 4:
+    if not 0 <= score <= 4 or not isfinite(score):
         return None
     return floor(score * 25 + 0.5)
 

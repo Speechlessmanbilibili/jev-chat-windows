@@ -17,6 +17,12 @@ k32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 k32.GlobalFree.argtypes = [ctypes.c_void_p]
 u32.SetClipboardData.restype = ctypes.c_void_p
 u32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+u32.GetForegroundWindow.restype = w.HWND
+u32.SetForegroundWindow.argtypes = [w.HWND]
+u32.IsWindow.argtypes = [w.HWND]
+u32.GetWindowRect.argtypes = [w.HWND, ctypes.POINTER(w.RECT)]
+u32.GetWindowThreadProcessId.argtypes = [w.HWND, ctypes.POINTER(w.DWORD)]
+ctypes.windll.dwmapi.DwmGetWindowAttribute.argtypes = [w.HWND, w.DWORD, ctypes.c_void_p, w.DWORD]
 
 
 def set_clipboard(text):
@@ -50,12 +56,8 @@ def fill(hwnd, area, text):
     """area = 消息区 (x0, y0, x1, y1)；输入框就在底线 y1 下面。"""
     from app.capture import unminimize
 
-    set_clipboard(text)
-    r = w.RECT()
-    if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:  # 扩展边界，跟 WGC 帧对齐
-        u32.GetWindowRect(hwnd, ctypes.byref(r))
-    x0, _, _, y1 = area
-    cx, cy = r.left + x0 + 60, r.top + y1 + 40  # 分隔线下 40px = 输入框文字区；工具栏和「发送」在输入区最底下，碰不到
+    if not hwnd or not u32.IsWindow(hwnd):
+        raise RuntimeError("聊天窗口已关闭，请重新开启采集。")
     unminimize(hwnd)
 
     # SetForegroundWindow 有前台窗口保护，普通后台进程会被拒；AttachThreadInput 绕过
@@ -63,20 +65,38 @@ def fill(hwnd, area, text):
     if fg != hwnd:
         fg_tid = u32.GetWindowThreadProcessId(fg, None)
         our_tid = k32.GetCurrentThreadId()
-        u32.AttachThreadInput(our_tid, fg_tid, True)
-        u32.SetForegroundWindow(hwnd)
-        u32.AttachThreadInput(our_tid, fg_tid, False)
+        attached = bool(fg_tid and fg_tid != our_tid and u32.AttachThreadInput(our_tid, fg_tid, True))
+        try:
+            u32.SetForegroundWindow(hwnd)
+        finally:
+            if attached:
+                u32.AttachThreadInput(our_tid, fg_tid, False)
         time.sleep(0.15)  # 给微信一点时间响应前台切换
+    if u32.GetForegroundWindow() != hwnd:
+        raise RuntimeError("无法激活聊天窗口，请切换到该窗口后重试。")
+
+    r = w.RECT()
+    if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
+        if not u32.GetWindowRect(hwnd, ctypes.byref(r)):
+            raise RuntimeError("无法读取聊天窗口的位置，请重新开启采集。")
+    x0, _, _, y1 = area
+    cx, cy = r.left + x0 + 60, r.top + y1 + 40
+    if not (r.left <= cx < r.right and r.top <= cy < r.bottom):
+        raise RuntimeError("输入区域已变化，请等待重新识别后重试。")
+    set_clipboard(text)
 
     old = w.POINT()
     u32.GetCursorPos(ctypes.byref(old))
     u32.SetCursorPos(cx, cy)
     time.sleep(0.05)
-    u32.mouse_event(0x2, 0, 0, 0, 0)  # 左键按下
-    u32.mouse_event(0x4, 0, 0, 0, 0)  # 抬起
+    down, up = (0x8, 0x10) if u32.GetSystemMetrics(23) else (0x2, 0x4)
+    u32.mouse_event(down, 0, 0, 0, 0)
+    u32.mouse_event(up, 0, 0, 0, 0)
     time.sleep(0.05)
     u32.SetCursorPos(old.x, old.y)
     time.sleep(0.05)
+    if u32.GetForegroundWindow() != hwnd:
+        raise RuntimeError("当前窗口已切换，请返回聊天窗口后重试。")
     # 光标移到已有文本的绝对末尾：点击落在文字中间时 caret 会插在中间，
     # 连续多次填入就串行错乱；Ctrl+End 保证新内容永远追加在最后
     u32.keybd_event(0x11, 0, 0, 0)  # Ctrl 按下

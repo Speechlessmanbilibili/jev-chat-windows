@@ -100,3 +100,25 @@ class RuntimeTests(unittest.TestCase):
             main.on_generate('甲')
             main.on_generate('甲')
         thread.return_value.start.assert_called_once()
+
+    def test_old_analysis_cannot_clear_new_request_busy_state(self):
+        chat = main.chat_of('甲')
+        chat.update(rev=2, analysis_rev=2, analysis_busy=True)
+        main.results.put(('ok', {'answers': {}}, '甲', 1))
+        main.tick()
+        self.assertTrue(chat['analysis_busy'])
+        self.overlay.show.assert_not_called()
+
+    def test_exited_capture_process_is_released_for_restart(self):
+        process = Mock()
+        process.is_alive.return_value = False
+        chat = main.chat_of('甲')
+        chat.update(result={'answers': {}, 'candidates': ['旧回复']}, analysis_busy=True)
+        with patch.object(main, 'child', process), patch.object(main, 'capture_on', Mock()):
+            main.tick()
+            self.assertIsNone(main.child)
+        self.assertIsNone(main.state['hwnd'])
+        self.assertIsNone(main.state['area'])
+        self.assertFalse(chat['analysis_busy'])
+        self.assertEqual(chat['result']['candidates'], [])
+        process.join.assert_called_once()

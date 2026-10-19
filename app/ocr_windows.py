@@ -53,16 +53,27 @@ class WindowsOcr:
         return self._engine.recognizer_language.language_tag
 
     def __call__(self, img: np.ndarray, use_cls: bool = False):
-        if SCALE > 1:
-            img = np.repeat(np.repeat(img, SCALE, axis=0), SCALE, axis=1)
+        if not img.size:
+            return [], None
+        h, w = img.shape[:2]
+        limit = OcrEngine.max_image_dimension
+        scale = min(float(SCALE), limit / max(h, w))
+        if scale != 1:
+            height, width = max(1, int(h * scale)), max(1, int(w * scale))
+            rows = np.minimum((np.arange(height) / scale).astype(int), h - 1)
+            columns = np.minimum((np.arange(width) / scale).astype(int), w - 1)
+            img = np.ascontiguousarray(img[rows[:, None], columns])
         h, w = img.shape[:2]
         bgra = np.dstack([img[:, :, ::-1], np.full((h, w, 1), 255, np.uint8)])
         buf = CryptographicBuffer.create_from_byte_array(bgra.tobytes())
         bitmap = SoftwareBitmap.create_copy_from_buffer(buf, BitmapPixelFormat.BGRA8, w, h,
                                                         BitmapAlphaMode.PREMULTIPLIED)
-        result = self._loop.run_until_complete(_recognize(self._engine, bitmap))
+        try:
+            result = self._loop.run_until_complete(_recognize(self._engine, bitmap))
+        finally:
+            bitmap.close()
         # boxes go back in source pixels: app/ocr.py indexes the original frame with them
-        return [run for line in result.lines for run in _runs(line, SCALE)], None
+        return [run for line in result.lines for run in _runs(line, scale)], None
 
     def close(self):
         self._loop.close()

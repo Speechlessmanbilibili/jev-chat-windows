@@ -52,17 +52,22 @@ def _clean(x: str) -> str:
 def _parse_candidates(content: str) -> list[str]:
     """从模型输出里抠候选（最多 3 条，可能不足）。先整体按 JSON 数组；不行就逐行——每行再试 JSON
     （一行一个 ["…"] 的情况），最后兜底剥符号。一条都没有才抛。"""
+    if not isinstance(content, str):
+        raise JevError("起草服务返回的内容格式错误，请重新生成。")
     content = content.strip()
     # 去掉可能的 ```json 围栏
     content = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
     try:
         arr = json.loads(content)
         if isinstance(arr, list):
-            got = [_clean(str(x)) for x in arr]
+            got = [_clean(x) for x in arr if isinstance(x, str)]
             got = [g for g in got if g]
             if got:
                 return got[:3]
-    except Exception:
+            raise JevError("起草服务未返回有效的文本候选，请重新生成。")
+        if not isinstance(arr, str):
+            raise JevError("起草服务返回的内容格式错误，请重新生成。")
+    except (ValueError, TypeError):
         pass
     got = []
     for ln in content.splitlines():
@@ -76,8 +81,10 @@ def _parse_candidates(content: str) -> list[str]:
         except Exception:
             # 几个 ["…"] 挤在一行（逗号连着）：把每个方括号里的字符串抠出来
             items = re.findall(r'\[\s*"((?:[^"\\]|\\.)*)"\s*\]', bare) if bare.startswith("[") else [ln]
+            if not items and bare.startswith(("[", "{")):
+                continue
             items = items or [ln]
-        got += [c for c in (_clean(str(x)) for x in items) if c]
+        got += [c for c in (_clean(x) for x in items if isinstance(x, str)) if c]
     if got:
         return got[:3]
     raise JevError(f"起草结果解析不出候选: {content[:200]!r}")

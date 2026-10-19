@@ -11,8 +11,8 @@ from app.i18n import T
 
 # (kind, 画框的色, 色的中文, 这类是什么)：跟设置页那条提示一个口径
 _KINDS = (("me", "#18794e", "绿", "我"), ("her", "#1f6fd0", "蓝", "对方"),
-          ("gray", "#8a8a8a", "灰", "过滤掉的灰字"), ("name", "#e08b18", "橙", "当成发言人名"),
-          ("image", "#d0342c", "红", "当成图片丢掉"), ("tiny", "#d4b106", "黄", "小字丢掉"))
+          ("gray", "#8a8a8a", "灰", "已过滤灰色文字"), ("name", "#e08b18", "橙", "发言人姓名"),
+          ("image", "#d0342c", "红", "已过滤图片文字"), ("tiny", "#d4b106", "黄", "已过滤小号文字"))
 _COLOR = {k: c for k, c, _, _ in _KINDS}
 _NAME = {k: n for k, _, _, n in _KINDS}
 _AREA = "#1f6fd0"  # 消息区
@@ -34,7 +34,7 @@ class _Canvas(QWidget):
         if self.img is None:
             p.setPen(QColor("#9aa6a0"))
             p.drawText(self.rect(), Qt.AlignCenter,
-                       T("等待画面…") + "\n" + T("开着采集，聊天窗口有动静就会有帧"))
+                       T("等待画面…") + "\n" + T("开启采集后，聊天画面更新时将在此显示。"))
             return
         # 等比铺满 + 居中；s 是「缩小后的帧 → 控件」的倍率，k 是子进程缩了多少
         s = min(self.width() / self.img.width(), self.height() / self.img.height())
@@ -47,7 +47,7 @@ class _Canvas(QWidget):
         area = self.pkt.get("area")
         if not area:
             p.setPen(QColor("#d0342c"))
-            p.drawText(QRectF(ox, oy, w, 30), Qt.AlignCenter, T("认不出消息区"))
+            p.drawText(QRectF(ox, oy, w, 30), Qt.AlignCenter, T("未识别到消息区域"))
             return
         x0, y0, x1, y1 = area
         p.setPen(QPen(QColor(_HEAD), 1))
@@ -111,7 +111,7 @@ class DebugWindow(QWidget):
         horizontal = self.info.horizontalScrollBar().value()
         if self.canvas.pkt is None:
             self.info.setPlainText(_legend())
-            self.status.setText(T("最近一帧 —— · 等待中…"))
+            self.status.setText(T("等待采集画面…"))
         else:
             self._show_packet_text(self.canvas.pkt)
         self.info.verticalScrollBar().setValue(vertical)
@@ -126,15 +126,15 @@ class DebugWindow(QWidget):
         text = [
             T("会话：{title}").format(title=pkt.get("title") or T("（未识别）")),
             T("消息区：{area}").format(
-                area=f"x {area[0]}–{area[2]} · y {area[1]}–{area[3]}" if area else T("认不出消息区")),
-            T("头部顶：y {top}").format(top=pkt.get("pane_top", 0)),
+                area=f"x {area[0]}–{area[2]} · y {area[1]}–{area[3]}" if area else T("未识别到消息区域")),
+            T("标题区域起点：y {top}").format(top=pkt.get("pane_top", 0)),
             T("OCR 耗时：{elapsed} ms").format(elapsed=pkt.get("ocr_ms", 0)),
-            T("帧：{width}×{height}（原帧缩了 1/{scale} 再过队列）").format(
+            T("预览尺寸：{width}×{height}，缩放比例：1/{scale}").format(
                 width=pkt["w"], height=pkt["h"], scale=pkt.get("scale", 1)),
-            T("框：{counts}").format(
+            T("识别分类：{counts}").format(
                 counts="、".join(f"{T(_NAME.get(k, k))} {v}" for k, v in counts.items()) or T("无")),
             "",
-            T("本帧 {count} 行").format(count=len(pkt.get("lines", ()))),
+            T("已识别消息：{count} 行").format(count=len(pkt.get("lines", ()))),
         ]
         for who, name, line in pkt.get("lines", ()):
             text.append(f"{who}({name})：{line}" if name else f"{who}：{line}")
