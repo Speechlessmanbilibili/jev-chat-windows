@@ -305,7 +305,7 @@ def drain():
             chat["pending"] = None
             if title == ov.current_chat():
                 ov.set_busy(False)
-                ov.set_status("已检测到本人回复，等待对方的新消息。")
+                ov.set_status("你已回复，等待对方的新消息。")
 
 
 def tick():

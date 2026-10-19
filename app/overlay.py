@@ -449,7 +449,7 @@ class Overlay:
         self.chatBox = _FitCombo()
         bind(self.chatBox, "尚未识别到会话", "setPlaceholderText")
         bind(self.chatBox, "当前会话", "setAccessibleName")
-        bind(self.chatBox, "自动跟随聊天客户端的当前会话，也可选择其他会话查看历史记录和分析结果。", "setToolTip")
+        bind(self.chatBox, "跟随聊天窗口中的当前会话，也可以切换查看其他会话的记录和分析。", "setToolTip")
         self.chatBox.currentIndexChanged.connect(self._on_chat_selected)
         chat_row.addWidget(self.chatBox, 1)
         self.chatFollow = _label("", 11, _MUTED)
@@ -466,12 +466,12 @@ class Overlay:
         target_row.addWidget(target_prefix)
         self.targetBox = _FitCombo()
         bind(self.targetBox, "回复对象", "setAccessibleName")
-        bind(self.targetBox, "分析与回复将针对所选对象；默认选择最近发言的成员。", "setToolTip")
+        bind(self.targetBox, "选择要分析和回复的人，默认跟随最近发言的人。", "setToolTip")
         self.targetBox.currentIndexChanged.connect(self._on_target_selected)
         target_row.addWidget(self.targetBox, 1)
         self.atCheck = bind(CheckBox(""), "添加 @姓名")
         self.atCheck.setChecked(True)
-        bind(self.atCheck, "在回复开头添加“@姓名 ”文本，不触发聊天客户端的提及功能。", "setToolTip")
+        bind(self.atCheck, "在回复开头加上“@姓名 ”，作为普通文字填入。", "setToolTip")
         target_row.addWidget(self.atCheck)
         self.targetRow.hide()
         body.addWidget(self.targetRow)
@@ -527,7 +527,7 @@ class Overlay:
         self.emptyTitle = _tlabel("等待对方的新消息", 17, "#304c3c", True)
         self.emptyTitle.setAlignment(Qt.AlignCenter)
         empty_box.addWidget(self.emptyTitle)
-        self.emptyHint = _tlabel("请保持聊天窗口打开。\n收到对方的新消息后，将自动分析意图与语气。", 13, _MUTED)
+        self.emptyHint = _tlabel("保持聊天窗口打开，\n收到新消息后会自动分析意图与语气。", 13, _MUTED)
         self.emptyHint.setAlignment(Qt.AlignCenter)
         empty_box.addWidget(self.emptyHint)
         self.setupButton = bind(PrimaryPushButton(""), "前往设置")
@@ -535,8 +535,8 @@ class Overlay:
         self.setupButton.setVisible(not settings.has_key())
         empty_box.addWidget(self.setupButton, 0, Qt.AlignHCenter)
         if not settings.has_key():
-            bind(self.emptyTitle, "请完成初始设置", "setText")
-            bind(self.emptyHint, "请配置分析模型和关系背景。\n回复起草可在需要时单独配置。", "setText")
+            bind(self.emptyTitle, "先设置一下", "setText")
+            bind(self.emptyHint, "设置关系背景和分析模型，就可以开始。\n需要回复建议时，再配置回复模型。", "setText")
         body.addWidget(self.empty)
         self.draftToggle = bind(PushButton(""), "展开回复起草")
         self.draftToggle.clicked.connect(self._toggle_draft)
@@ -547,12 +547,12 @@ class Overlay:
         self.generateButton = bind(PrimaryPushButton(""), "生成回复")
         self.generateButton.clicked.connect(self._generate)
         draft_box.addWidget(self.generateButton)
-        self.draftFeedback = _tlabel("选择“生成回复”后，将生成候选回复并进行排序。", 12, _MUTED)
+        self.draftFeedback = _tlabel("点击“生成回复”，挑一句合适的再调整。", 12, _MUTED)
         draft_box.addWidget(self.draftFeedback)
         self.replyBox = QVBoxLayout()
         self.replyBox.setSpacing(10)
         draft_box.addLayout(self.replyBox)
-        self.referenceNote = _tlabel("请核对回复内容，并根据实际情况修改后发送。", 11, _MUTED)
+        self.referenceNote = _tlabel("发送前看一遍，按你的习惯调整措辞。", 11, _MUTED)
         self.referenceNote.hide()
         draft_box.addWidget(self.referenceNote)
         self.draftContent.hide()
@@ -602,7 +602,7 @@ class Overlay:
         box.addWidget(self.languageOverrideHint)
         body.addWidget(language)
 
-        body.addWidget(_tlabel("设置关系背景、分析模型及可选的回复起草模型。", 13, _MUTED))
+        body.addWidget(_tlabel("设置关系背景和模型，让分析和回复更贴近你们的对话。", 13, _MUTED))
         preference = _Surface()
         box = QVBoxLayout(preference)
         box.setContentsMargins(16, 16, 16, 18)
@@ -617,21 +617,21 @@ class Overlay:
         relation_label.setBuddy(self.relationshipBox)
         box.addWidget(self.relationshipBox)
         self.relEdit = LineEdit()
-        bind(self.relEdit, "例如：新认识的朋友，使用自然、礼貌的表达", "setPlaceholderText")
+        bind(self.relEdit, "例如：刚认识的朋友，还不太熟悉", "setPlaceholderText")
         bind(self.relEdit, "自定义关系背景", "setAccessibleName")
         box.addWidget(self.relEdit)
         self.relationshipBox.currentIndexChanged.connect(
             lambda index: self.relEdit.setVisible(_RELATIONSHIPS[index][1] is None)
         )
-        box.addWidget(self._hint("用于确定称呼、语气及回复方式。"))
+        box.addWidget(self._hint("简单说明你们的关系，帮助调整称呼和回复语气。"))
         style_label = _tlabel("说话风格（可选）", 13)
         box.addWidget(style_label)
         self.styleEdit = LineEdit()
-        bind(self.styleEdit, "例如：表达简洁，语气自然，避免过多客套", "setPlaceholderText")
+        bind(self.styleEdit, "例如：简短自然，少用表情，不说客套话", "setPlaceholderText")
         bind(self.styleEdit, "说话风格", "setAccessibleName")
         style_label.setBuddy(self.styleEdit)
         box.addWidget(self.styleEdit)
-        box.addWidget(self._hint("根据本人近期消息生成候选回复，可在此补充表达偏好。"))
+        box.addWidget(self._hint("会参考你最近的消息来写，也可以在这里补充你的说话习惯。"))
         context_label = _tlabel("上下文消息数", 13)
         box.addWidget(context_label)
         self.contextBox = SpinBox()
@@ -640,7 +640,7 @@ class Overlay:
         context_label.setBuddy(self.contextBox)
         box.addWidget(self.contextBox)
         box.addWidget(self._hint(
-            "分析与起草使用的最近消息条数，范围为 3～30 条。"
+            "分析和生成回复时，参考最近的 3～30 条消息。"
         ))
         target_row = QHBoxLayout()
         target_row.addWidget(_tlabel("群聊指定回复对象", 13), 1)
@@ -651,7 +651,7 @@ class Overlay:
         target_row.addWidget(self.targetSwitch)
         box.addLayout(target_row)
         box.addWidget(self._hint(
-            "开启后可选择群聊中的分析与回复对象；关闭时根据最新发言进行分析。"
+            "开启后，可以选择群聊中要分析和回复的人；关闭时跟随最新发言。"
         ))
         update_row = QHBoxLayout()
         update_row.addWidget(_tlabel("启动时检查更新", 13), 1)
@@ -687,7 +687,7 @@ class Overlay:
         self._fetched.done.connect(self._models_fetched)
         self.jev = self._model_group(box, "分析模型", "jev", providers.JEV_PROVIDERS)
         box.addWidget(self._hint(
-            "自动分析意图、语气和紧张度，并在生成回复后对候选进行排序。"
+            "分析意图、语气和紧张度，并为回复建议排序。"
         ))
         draft_settings_toggle = bind(PushButton(""), "回复起草设置（可选）")
         self.draftSettings = QWidget()
@@ -697,7 +697,7 @@ class Overlay:
         draft_settings_box.setContentsMargins(0, 0, 0, 0)
         self.draft = self._model_group(draft_settings_box, "回复起草模型", "draft", providers.DRAFT_PROVIDERS)
         draft_settings_box.addWidget(self._hint(
-            "用于生成候选回复，使用独立的起草 API 密钥。"
+            "生成回复建议，使用单独的 API 密钥。"
         ))
         think_row = QHBoxLayout()
         think_row.addWidget(_tlabel("起草时开启思考模式", 13), 1)
@@ -708,7 +708,7 @@ class Overlay:
         think_row.addWidget(self.thinkingSwitch)
         draft_settings_box.addLayout(think_row)
         draft_settings_box.addWidget(self._hint(
-            lambda: T("开启后，模型将在生成回复前进行推理，响应时间和费用可能增加。支持范围：{providers}。")
+            lambda: T("开启后，模型会先思考再生成回复，耗时和费用可能增加。支持：{providers}。")
             .format(providers=" / ".join(providers.THINKING))
         ))
         box.addWidget(self.draftSettings)
@@ -726,7 +726,7 @@ class Overlay:
         self.saveButton.clicked.connect(self._save)
         actions.addWidget(self.saveButton)
         body.addLayout(actions)
-        body.addWidget(self._hint("保存后将更新分析配置，起草设置用于下一次生成。"))
+        body.addWidget(self._hint("保存后会更新分析，回复设置在下次生成时生效。"))
         body.addStretch(1)
         self._load_settings()
 
@@ -999,7 +999,7 @@ class Overlay:
         self.setupButton.hide()
         if not self.cands and not self._busy:
             self._empty_text()
-            self.set_status("设置已完成，等待新消息。", "idle")
+            self.set_status("准备就绪，等待新消息。", "idle")
 
     def _debug_toggled(self, on):
         """调试视图独立于「保存设置」：拨一下就开窗/收窗，顺手落盘，重启还在。"""
@@ -1051,7 +1051,7 @@ class Overlay:
             self.log(f"[填入失败] {type(e).__name__}: {e}")
             self.log(f"[填入失败堆栈] {' '.join(traceback.format_exc().split())[:300]}")
             return
-        self.set_status("回复已填入输入框，请核对后手动发送。", "success")
+        self.set_status("回复已填入，确认内容后手动发送。", "success")
 
     def _copy(self, index):
         if self._busy or not self._current or not 0 <= index < len(self.cands):
@@ -1091,7 +1091,7 @@ class Overlay:
             return
         if not on:
             bind(self.emptyTitle, "采集已暂停", "setText")
-            bind(self.emptyHint, "采集已暂停。\n开启顶部采集开关后，将继续识别聊天消息。", "setText")
+            bind(self.emptyHint, "开启顶部采集开关，继续读取聊天消息。", "setText")
             self.setupButton.setVisible(not configured)
         else:
             self._empty_text()
@@ -1105,7 +1105,7 @@ class Overlay:
             self.set_status("正在分析意图与语气…", "busy")
             if not self._result:
                 bind(self.emptyTitle, "正在分析最新消息", "setText")
-                bind(self.emptyHint, "正在结合上下文评估意图与语气。", "setText")
+                bind(self.emptyHint, "正在参考前面的聊天，分析对方的意图与语气。", "setText")
                 self.setupButton.hide()
         else:
             self.progress.stop()
@@ -1118,9 +1118,9 @@ class Overlay:
     def _empty_text(self):
         """空态卡片的默认文案，配好没配好两套说法。"""
         configured = settings.has_key()
-        bind(self.emptyTitle, "等待对方的新消息" if configured else "请完成初始设置")
-        bind(self.emptyHint, "请保持聊天窗口打开。\n收到对方的新消息后，将自动分析意图与语气。"
-                            if configured else "请配置分析模型和关系背景。\n回复起草可在需要时单独配置。")
+        bind(self.emptyTitle, "等待对方的新消息" if configured else "先设置一下")
+        bind(self.emptyHint, "保持聊天窗口打开，\n收到新消息后会自动分析意图与语气。"
+                            if configured else "设置关系背景和分析模型，就可以开始。\n需要回复建议时，再配置回复模型。")
         self.setupButton.setVisible(not configured)
 
     def invalidate_replies(self):
@@ -1149,7 +1149,7 @@ class Overlay:
         self.generateButton.setEnabled(self._current and not self._busy and not busy)
         bind(self.generateButton, "正在生成…" if busy else "生成回复")
         bind(self.draftFeedback, error or ("正在生成候选并排序…" if busy else
-             "选择“生成回复”后，将生成候选回复并进行排序。"))
+             "点击“生成回复”，挑一句合适的再调整。"))
         color = "#b44832" if error else (_GREEN if busy else _MUTED)
         qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
         setCustomStyleSheet(self.draftFeedback, qss, qss)
@@ -1350,7 +1350,7 @@ class Overlay:
             self.generateButton.setEnabled(False)
             for card in self.cards:
                 card.set_available(False)
-            self.set_status(lambda: T("正在查看“{name}”的历史记录。请在聊天客户端打开该会话后使用回复功能。").format(name=self._shown))
+            self.set_status(lambda: T("正在查看“{name}”的记录。在聊天窗口切到这个会话后，就能使用回复功能。").format(name=self._shown))
 
     def show(self, result):
         """按推荐顺序展示，按钮始终绑定 candidates 的原始索引。"""
@@ -1402,7 +1402,7 @@ class Overlay:
         self.set_status("分析已更新", "success")
         if result.get("stale"):
             self.invalidate_replies()
-            self.set_status("当前显示历史分析，等待对方的新消息。")
+            self.set_status("这里显示上次的分析，等待对方的新消息。")
         if result.get("analysis_busy"):
             self.set_busy(True)
 
