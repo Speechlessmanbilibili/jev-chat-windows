@@ -1,10 +1,10 @@
 """验证采集、OCR、输入回填及异常响应的实际故障边界。"""
 import json
 import tempfile
-import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, mock_open, patch
+from support import SettingsTestCase
 
 import numpy as np
 
@@ -12,10 +12,9 @@ from app import capture, chatapps, fill, ocr, ocr_windows, settings
 from core.draft import _parse_candidates
 from core.jev_client import JevError
 from core.llm import chat
-from core.openai_decisions import normalize_response
 
 
-class ReliabilityTests(unittest.TestCase):
+class ReliabilityTests(SettingsTestCase):
     def test_chat_area_separates_composer_across_dpi_and_window_sizes(self):
         def frame(scale=1, composer=0, separator=None):
             image = np.full((800 * scale, 400 * scale, 3), 30, dtype=np.uint8)
@@ -74,6 +73,9 @@ class ReliabilityTests(unittest.TestCase):
         self.assertEqual(reader.new_lines(current), [])
         self.assertEqual(reader.new_lines(first), [])
         self.assertEqual(reader.new_lines([('her', '甲', '新的话题', 10)]), [('her', '甲', '新的话题')])
+        reader.seen = [('her', '甲', '旧消息 A'), ('her', '甲', '旧消息 B')]
+        self.assertEqual(reader.new_lines([('her', '甲', '旧消息 A', 10), ('her', '甲', '新消息 C', 30)]),
+                         [('her', '甲', '新消息 C')])
 
     def test_ocr_ignores_outside_boxes_and_restores_trimmed_coordinates(self):
         image = np.full((40, 40, 3), 255, dtype=np.uint8)
@@ -102,6 +104,11 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(reader(np.zeros((30, 80, 3), dtype=np.uint8)), ([], None))
         self.assertEqual(factory.call_args.args[2:4], (100, 37))
         bitmap.close.assert_called_once()
+        words = [SimpleNamespace(text=text, bounding_rect=SimpleNamespace(x=x,y=6,width=40,height=20))
+                 for x,text in ((10, "배포"), (55, "안"), (400, "오전"))]
+        runs = ocr_windows._runs(SimpleNamespace(words=words), scale=2)
+        self.assertEqual([r[1] for r in runs], ["배포 안", "오전"])
+        self.assertEqual(runs[0][0][0], [5, 3])
 
     def test_fill_stops_before_input_when_foreground_activation_fails(self):
         user32 = Mock()
@@ -111,10 +118,24 @@ class ReliabilityTests(unittest.TestCase):
         with patch.object(fill, 'u32', user32), patch.object(fill, 'set_clipboard') as clipboard, \
                 patch.object(capture, 'unminimize'), patch.object(fill.time, 'sleep'), \
                 self.assertRaises(RuntimeError):
-            fill.fill(1, (0, 0, 100, 100), '测试')
+            fill.fill(1, (0, 0, 100, 100), '测试', expected_title='甲')
         clipboard.assert_not_called()
         user32.mouse_event.assert_not_called()
         user32.keybd_event.assert_not_called()
+
+        user32.GetForegroundWindow.return_value = 1
+        stream = Mock()
+        stream.settled.return_value = np.full((200, 200, 3), 255, dtype=np.uint8)
+        area = (0, 60, 200, 140, np.array([255, 255, 255]), 0)
+        with patch.object(fill, 'u32', user32), patch.object(fill, 'set_clipboard') as clipboard, \
+                patch.object(capture, 'unminimize'), patch.object(capture, 'Capture', return_value=stream), \
+                patch.object(capture, 'chat_area', return_value=area), \
+                patch.object(ocr, 'read_title', return_value='乙'), self.assertRaises(RuntimeError):
+            fill.fill(1, area[:4], '测试', expected_title='甲')
+        clipboard.assert_not_called()
+        user32.mouse_event.assert_not_called()
+        user32.keybd_event.assert_not_called()
+        stream.stop.assert_called_once()
 
     def test_fill_uses_swapped_primary_mouse_button(self):
         user32 = Mock()
@@ -126,9 +147,9 @@ class ReliabilityTests(unittest.TestCase):
             pointer._obj.right, pointer._obj.bottom = 500, 600
             return 0
         with patch.object(fill, 'u32', user32), patch.object(fill, 'set_clipboard'), \
-                patch.object(capture, 'unminimize'), patch.object(fill.time, 'sleep'), \
-                patch.object(fill.ctypes.windll.dwmapi, 'DwmGetWindowAttribute', side_effect=rectangle):
-            fill.fill(1, (0, 0, 400, 400), '测试')
+                patch.object(capture, 'unminimize'), patch.object(capture, 'verify_chat', return_value=(0,0,400,400)), \
+                patch.object(fill.time, 'sleep'), patch.object(fill.ctypes.windll.dwmapi, 'DwmGetWindowAttribute', side_effect=rectangle):
+            fill.fill(1, (0, 0, 400, 400), '测试', expected_title='甲')
         self.assertEqual([call.args[0] for call in user32.mouse_event.call_args_list], [0x8, 0x10])
         self.assertNotIn(0x0D, [call.args[0] for call in user32.keybd_event.call_args_list])
 
@@ -144,26 +165,22 @@ class ReliabilityTests(unittest.TestCase):
                 settings.save(style_text='新文案')
             self.assertEqual(config.read_text(encoding='utf-8'), original)
             self.assertEqual(list(Path(directory).iterdir()), [config])
+        settings._CACHE = None
         with patch('builtins.open', mock_open(read_data='{"thinking":"false","context":Infinity,"jev_model":{}}')):
             self.assertFalse(settings.thinking())
             self.assertEqual(settings.context(), 10)
             self.assertEqual(settings.jev_model(), 'gpt-6-luna')
 
     def test_invalid_candidates_and_truncated_output_are_rejected(self):
-        for value in ('[null, 1, {}]', '{"reply":"内容"}', '["未完成', None):
+        for value in ('[null, 1, {}]', '[null, "有效回复", 12]', '{"reply":"内容"}', '["未完成',
+                      '抱歉，我无法提供候选回复。', '1. 好的\n2. 行', None):
             with self.subTest(value=value), self.assertRaises(JevError):
                 _parse_candidates(value)
-        self.assertEqual(_parse_candidates('[null, "有效回复", 12]'), ['有效回复'])
+        self.assertEqual(_parse_candidates('[" 八点到。 ", "晚安～", "八点到。", "好的"]'),
+                         ['八点到。', '晚安～', '好的'])
         client = Mock()
         client.chat.completions.create.return_value = SimpleNamespace(choices=[SimpleNamespace(
             finish_reason='length', message=SimpleNamespace(content='["未完成', refusal=None))])
         with patch('openai.OpenAI', return_value=client), self.assertRaises(JevError):
             chat('openai', 'https://api.openai.com/v1', 'synthetic-key', 'gpt-6-luna', '测试', ['你好'])
         client.close.assert_called_once()
-
-    def test_invalid_decisions_shapes_raise_readable_errors(self):
-        questions = {'score': {'type': 'score', 'criteria': ['低', '高']}}
-        for response in ([], {'answers': [{'name': []}]},
-                         {'answers': [{'name': 'score', 'type': 'score', 'probabilities': [None]}]}):
-            with self.subTest(response=response), self.assertRaises(JevError):
-                normalize_response(response, questions)

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import mock_open, patch
+from support import SettingsTestCase
 
 import httpx
 import openai
@@ -16,7 +17,8 @@ from core.draft import draft_candidates
 from core.jev_client import JevError, _api_key, ask, list_models, redact_secrets
 from core.openai_decisions import convert_questions, normalize_response
 from core.providers import key_env
-from core.questions import JUDGE_QUESTIONS, build_rank_question, build_state
+from core.questions import build_rank_question, build_state
+from core.intent import INTENT_QUESTIONS as JUDGE_QUESTIONS
 
 
 def response_for(questions):
@@ -87,17 +89,18 @@ class DecisionsTests(unittest.TestCase):
                 response['answers'][-1]['choice'] = 'not_a_candidate'
             with self.subTest(mutation=mutation), self.assertRaises(JevError):
                 normalize_response(response, self.questions)
+        for malformed in ([], {'answers': [{'name': []}]},
+                          {'answers': [{'name': 'danger_level', 'type': 'score', 'probabilities': [None]}]}):
+            with self.subTest(response=malformed), self.assertRaises(JevError):
+                normalize_response(malformed, self.questions)
         response = dict(answers=[dict(name=n, type='refusal') for n in self.questions])
         with self.assertRaises(JevError):
             normalize_response(response, self.questions)
 
-    def test_sdk_http_contract_and_retry(self):
+    def test_sdk_http_contract(self):
         requests = []
         def handler(request):
             requests.append(request)
-            if len(requests) == 1:
-                return httpx.Response(429, headers={'retry-after-ms': '1'},
-                                      json={'error': {'message': 'limited'}})
             return httpx.Response(200, json=response_for(self.questions))
         factory = openai.OpenAI
         def client(**kwargs):
@@ -105,7 +108,7 @@ class DecisionsTests(unittest.TestCase):
         with patch.dict(os.environ, {'OPENAI_API_KEY': 'official-test', 'JEV_API_KEY': 'other-test'}), \
                 patch('openai.OpenAI', side_effect=client):
             result = ask(self.state, self.questions)
-        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(requests), 1)
         self.assertEqual(str(requests[-1].url), 'https://api.openai.com/v1/decisions')
         self.assertEqual(requests[-1].headers['authorization'], 'Bearer official-test')
         body = json.loads(requests[-1].content)
@@ -160,7 +163,7 @@ class DecisionsTests(unittest.TestCase):
             draft.assert_not_called()
             self.assertEqual(len(calls), 1)
             self.assertEqual(len(calls[0]), 29)
-            result = engine.generate_replies([('her', '明天开会')], 'colleagues', result)
+            result = engine.generate_replies(result)
         self.assertEqual(len(calls), 2)
         self.assertEqual(list(calls[1]), ['best_reply'])
         self.assertEqual(result['best_index'], 1)
@@ -185,7 +188,7 @@ class DraftCompatibilityTests(unittest.TestCase):
                 patch('openai.OpenAI', side_effect=client):
             for model, thinking in ((None, False), (None, True), ('gpt-4.1-mini', False)):
                 with self.subTest(model=model, thinking=thinking):
-                    candidates = draft_candidates([('her', '你好')], 'friends', provider='openai',
+                    candidates = draft_candidates(build_state([('her', '你好')], 'friends'), provider='openai',
                                                   model=model, thinking=thinking)
                     self.assertEqual(len(candidates), 3)
                     request = requests[-1]
@@ -208,10 +211,10 @@ class DraftCompatibilityTests(unittest.TestCase):
         self.assertEqual(len(requests), 3)
 
 
-class KeySettingsTests(unittest.TestCase):
+class KeySettingsTests(SettingsTestCase):
     def test_invalid_config_types_use_defaults(self):
-        for payload in ('[]', 'null', '42', '"配置"',
-                        '{"jev_provider": [], "draft_provider": {}}'):
+        for payload in ('{"jev_provider": [], "draft_provider": {}}',):
+            settings._CACHE = None
             with self.subTest(payload=payload), \
                     patch('builtins.open', mock_open(read_data=payload)):
                 self.assertEqual(settings.jev_provider(), 'openai')

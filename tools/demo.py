@@ -35,17 +35,16 @@ def main() -> int:
             print(f"  {who}: {text}")
         try:
             result = analyze(messages, relationship, jev_provider=settings.jev_provider(),
-                             jev_model=settings.jev_model() or None)
+                             jev_model=settings.jev_model() or None, jev_base_url=settings.jev_base_url() or None)
             for kind, label in (("intent", "意图"), ("tone", "语气")):
                 print(label + "：" + "、".join(f"{name} {value}%" if value is not None else f"{name} —"
                                              for name, value in ratings(result["answers"], kind)[:4]))
             print(f"评分项：{len(result['answers'])}；拒答项：{result['refused']}")
             if args.draft:
-                result = generate_replies(messages, relationship, result,
+                result = generate_replies(result,
                                           provider=settings.draft_provider(), model=settings.draft_model() or None,
                                           base_url=settings.draft_base_url() or None, style=settings.style(),
-                                          thinking=settings.thinking(), jev_provider=settings.jev_provider(),
-                                          jev_model=settings.jev_model() or None)
+                                          thinking=settings.thinking())
                 for index, text in enumerate(result["candidates"]):
                     print(f"  {'★' if index == result['best_index'] else '·'} {text}")
         except JevError as error:

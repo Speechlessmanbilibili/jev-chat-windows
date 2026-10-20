@@ -24,28 +24,15 @@ SCALE = 2    # nearest-neighbour upscale before recognition: on a 760px-wide Kak
              # drops the stray one-character fragments ("I", "口(") for +30ms; 3x brings them back
 
 
-def available(lang: str | None = None) -> bool:
-    try:
-        return _engine_for(lang) is not None
-    except Exception:
-        return False
-
-
-def _engine_for(lang: str | None):
-    if lang:
-        return OcrEngine.try_create_from_language(Language(lang))
-    return OcrEngine.try_create_from_user_profile_languages()
-
-
 class WindowsOcr:
     """One engine per process; the event loop is kept alive because a frame arrives every 50ms."""
 
     def __init__(self, lang: str | None = None):
-        self._engine = _engine_for(lang)
+        self._engine = (OcrEngine.try_create_from_language(Language(lang)) if lang
+                        else OcrEngine.try_create_from_user_profile_languages())
         if self._engine is None:
             raise RuntimeError(
-                f"Windows OCR has no recognizer for {lang or 'the user profile languages'}. "
-                "Add the language under Settings > Time & language > Language & region.")
+                f"Windows OCR 缺少 {lang or '当前用户语言'} 的识别组件，请在系统语言设置中安装后重新开启采集。")
         self._loop = asyncio.new_event_loop()
 
     @property
@@ -105,24 +92,3 @@ def _box(run, scale: int = 1):
     text = " ".join(t for _, t in run)
     # Windows OCR reports no per-word confidence; 1.0 keeps the RapidOCR tuple shape usable.
     return [[[x0, y0], [x1, y0], [x1, y1], [x0, y1]], text, 1.0]
-
-
-if __name__ == "__main__":  # 自测：分段和坐标还原不碰引擎，没装语言包也能跑
-    class _R:
-        def __init__(self, x, w, h=20, y=0):
-            self.x, self.y, self.width, self.height = x, y, w, h
-
-    class _W:
-        def __init__(self, rect, text):
-            self.bounding_rect, self.text = rect, text
-
-    class _L:
-        def __init__(self, words):
-            self.words = words
-
-    line = _L([_W(_R(0, 40), "배포"), _W(_R(45, 40), "안"), _W(_R(400, 30), "오전")])
-    runs = _runs(line)
-    assert [t for _, t, _ in runs] == ["배포 안", "오전"], runs
-    (box, _, score), = _runs(_L([_W(_R(10, 40, y=6), "하이")]), scale=2)
-    assert box[0] == [5.0, 3.0] and box[2] == [25.0, 13.0] and score == 1.0, box
-    print("ocr_windows ok")

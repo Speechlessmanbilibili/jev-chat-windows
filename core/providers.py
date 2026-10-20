@@ -13,6 +13,8 @@ OPENROUTER_KEY_URL = "https://openrouter.ai/api/v1/auth/key"
 TYPESAFE_BASE = "https://api.typesafe.ai"
 OPENAI_BASE = "https://api.openai.com/v1"
 OPENAI_ENV = "OPENAI_API_KEY"
+LMSTUDIO_ENV = "LMSTUDIO_API_TOKEN"
+LMSTUDIO_BASE = "http://127.0.0.1:1234"
 
 JEV_ENV = "JEV_API_KEY"    # 判断那把，不管选 OpenRouter 还是 TypeSafe
 LLM_ENV = "LLM_API_KEY"    # 起草那把，不管选哪家语言模型
@@ -24,6 +26,7 @@ JEV_PROVIDERS = {
     "openai": _Jev("OpenAI Decisions", "gpt-6-luna"),
     "openrouter": _Jev("OpenRouter", "typesafe/jev-1.13"),
     "typesafe": _Jev("TypeSafe 直连", "jev-latest"),
+    "lmstudio": _Jev("LM Studio 本地决策", "d3-mini"),
 }
 
 # protocol ∈ {openai, anthropic, gemini}：决定 core/llm.py 用哪个官方 SDK
@@ -66,36 +69,13 @@ CUSTOM = ("custom_openai", "custom_anthropic")
 # 起草时认思考开关的来源，设置页那句提示照着这里写
 THINKING = ("DeepSeek", "OpenRouter", "OpenAI GPT-6 Luna", "Anthropic", "Gemini")
 # 所有可能存 key 的环境变量（新两把 + 两个老名字），脱敏时一次全过一遍（jev_client.redact_secrets）
-ENV_VARS = sorted({OPENAI_ENV, JEV_ENV, LLM_ENV, *LEGACY.values()})
+ENV_VARS = sorted({LMSTUDIO_ENV, OPENAI_ENV, JEV_ENV, LLM_ENV, *LEGACY.values()})
 
 
 def key_env(provider: str, role: str) -> str:
     """仅 OpenAI 判断读取 OPENAI_API_KEY，所有起草来源都使用独立的 LLM_API_KEY。"""
     if role == "draft":
         return LLM_ENV
+    if provider == "lmstudio":
+        return LMSTUDIO_ENV
     return OPENAI_ENV if provider == "openai" else JEV_ENV
-
-
-if __name__ == "__main__":
-    # ponytail: 纯数据，只查几条不变式——协议打错字、自定义来源漏配 Base URL、思考字段写反最容易出。
-    assert {p.protocol for p in DRAFT_PROVIDERS.values()} == {"openai", "anthropic", "gemini"}
-    assert all(p.base or key in CUSTOM or p.protocol == "gemini"
-               for key, p in DRAFT_PROVIDERS.items())
-    assert all(not DRAFT_PROVIDERS[key].base for key in CUSTOM)
-    assert next(iter(DRAFT_PROVIDERS)) == "deepseek"
-    assert DRAFT_PROVIDERS["deepseek"].extra(True) == {"thinking": {"type": "enabled"}}
-    assert DRAFT_PROVIDERS["deepseek"].extra(False) == {"thinking": {"type": "disabled"}}
-    assert DRAFT_PROVIDERS["openrouter"].extra(True) == {"reasoning": {"enabled": True}}
-    assert DRAFT_PROVIDERS["moonshot"].extra(True) == {}
-    assert DRAFT_PROVIDERS["deepseek"].headers is None and DRAFT_PROVIDERS["deepseek"].keep is None
-    go = DRAFT_PROVIDERS["opencode"]
-    assert go.protocol == "openai" and go.base == "https://opencode.ai/zen/go/v1"
-    assert go.default == "deepseek-v4.1-flash" and go.extra(True) == {}
-    uuid.UUID(go.headers["x-opencode-session"])
-    assert go.headers["User-Agent"] == "jev-chat-windows" and "key" not in go.headers
-    assert go.keep("deepseek-v4.1-flash") and go.keep("glm-5.3") and go.keep("hy3")
-    assert not any(go.keep(m) for m in (
-        "minimax-m3", "qwen3.8-max", "grok-4.7", "gpt-6-luna", "muse-spark-1.2-contributor"))
-    # 全程只有两把 key，脱敏还得管老名字
-    assert ENV_VARS == ["DEEPSEEK_API_KEY", "JEV_API_KEY", "LLM_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
-    print("providers ok")

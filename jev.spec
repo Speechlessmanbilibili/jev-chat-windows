@@ -1,20 +1,15 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包定义，CI（.github/workflows/release.yml）和 build.bat 共用这一份。
+"""PyInstaller 打包定义，由 tools/build_release.ps1 统一调用。
 onedir 不是 onefile：PySide6 + onnxruntime 打出来 ~150MB，onefile 每次启动都要解压一遍，慢且占临时盘。
 只在 Windows 上跑，下面的 collect_all 也只认 Windows 上装好的那几个包。"""
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, collect_submodules, collect_data_files
 import os
 
 NAME = "jev-chat-windows"
 
-hiddenimports = [
-    # spawn 出来的采集子进程按名字 import app.worker，再顺着它拉 capture/ocr；
-    # 父进程这边 engine 也是运行时才走到，一并钉死，别指望静态分析都能扫出来
-    "app.worker", "app.capture", "app.ocr", "app.fill", "app.overlay", "app.settings",
-    "app.version", "app.update", "app.debugwin",  # debugwin 是开了调试视图才 import 的
-    "core.engine", "core.draft", "core.jev_client", "core.questions", "core.providers",
-    "core.llm", "core.openai_decisions", "core.intent", "tools.preview_ui",
-]
+hiddenimports = ["socksio"]
+for sdk in ("openai", "typesafe_sdk", "anthropic", "google.genai"):
+    hiddenimports += collect_submodules(sdk)
 datas, binaries = [], []
 datas += [("docs/wechat-mp.png", "docs")]  # 设置页底部的公众号长条横幅
 for pkg in (
@@ -22,18 +17,13 @@ for pkg in (
     "onnxruntime",           # capi 下面那堆 DLL
     "qfluentwidgets",        # qss / 图标资源
     "windows_capture",       # Rust 编译的 .pyd
-    # 四个模型 SDK：core/llm.py 和 jev_client 里是**函数内 import**，静态分析扫不到，必须显式收
-    "openai",
-    "socksio",               # httpx 的 SOCKS 代理支持属于可选导入，需要显式打包。
-    "typesafe_sdk",
-    "anthropic",
-    "google.genai",
-    "certifi",               # httpx 的 CA 证书包；certifi 的官方 hook 通常收得到，这里写明白省得漏
 ):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
+
+datas += collect_data_files("certifi")
 
 excludes = [
     # 确认没人用：rapidocr 只 import 了 cv2 / PIL / yaml / pyclipper / shapely（PIL 千万别排，读图要它）

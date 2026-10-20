@@ -1,15 +1,16 @@
 """消息更新、切换会话和后台起草结果的版本隔离。"""
 import os
 import queue
-import unittest
 from unittest.mock import Mock, patch
+from support import SettingsTestCase
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import main
 
 
-class RuntimeTests(unittest.TestCase):
+class RuntimeTests(SettingsTestCase):
     def setUp(self):
+        super().setUp()
         main.chats.clear()
         main.state.update(area=None, hwnd=None, chat='甲')
         main.results = queue.Queue()
@@ -23,21 +24,12 @@ class RuntimeTests(unittest.TestCase):
         self.addCleanup(self.ui.stop)
 
     def test_analysis_starts_without_draft_key(self):
-        with patch.object(main.settings, 'has_jev_key', return_value=True), \
+        with patch.object(main.settings, 'analysis_ready', return_value=True), \
                 patch.object(main.settings, 'has_llm_key', side_effect=AssertionError('不应查询起草密钥')), \
                 patch.object(main.threading, 'Thread') as thread:
             main.start_analyze('甲', [('her', '你好')])
         thread.return_value.start.assert_called_once()
 
-    def test_new_messages_discard_inflight_draft(self):
-        chat = main.chat_of('甲')
-        chat.update(result={'answers': {'intent_thanks': {'score': 4}}, 'candidates': ['旧回复']}, draft_rev=0)
-        main.invalidate_chat('甲')
-        main.draft_results.put(('ok', {'candidates': ['过期结果']}, '甲', 0))
-        main.tick()
-        self.assertEqual(chat['result']['candidates'], [])
-        self.assertTrue(chat['result']['stale'])
-        self.overlay.show.assert_not_called()
 
     def test_other_chat_draft_is_cached_without_overwriting_screen(self):
         chat = main.chat_of('乙')

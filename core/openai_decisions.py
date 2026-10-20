@@ -5,12 +5,8 @@ from __future__ import annotations
 import json
 import math
 
-try:
-    from .jev_client import JevError, _fail
-    from .providers import OPENAI_BASE
-except ImportError:
-    from jev_client import JevError, _fail
-    from providers import OPENAI_BASE
+from .jev_client import JevError, _fail
+from .providers import OPENAI_BASE
 
 
 def convert_questions(questions: dict) -> list[dict]:
@@ -112,12 +108,8 @@ def ask_openai(state: dict, questions: dict, key: str, model: str, timeout: floa
                "questions": convert_questions(questions)}
     try:
         with openai.OpenAI(api_key=key, base_url=OPENAI_BASE, timeout=timeout,
-                           max_retries=3) as client:
-            # 较早版本 SDK 没有 decisions 资源，使用其公开的自定义请求接口。
-            if hasattr(client, "decisions"):
-                response = client.decisions.create(**payload).model_dump()
-            else:
-                response = client.post("/decisions", cast_to=dict, body=payload)
+                           max_retries=0) as client:
+            response = client.decisions.create(**payload).model_dump()
         return normalize_response(response, questions)
-    except Exception as exc:
+    except (openai.APIError, JevError) as exc:
         _fail(exc, "OpenAI Decisions 判断", key)

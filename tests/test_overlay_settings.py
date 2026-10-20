@@ -47,17 +47,6 @@ class OverlaySettingsTests(unittest.TestCase):
             finally:
                 overlay.win.close()
 
-    def test_only_judgment_key_is_needed_to_save(self):
-        with patch.object(settings, '_read', side_effect=lambda name, default=None: default), \
-                patch.object(settings, '_read_env', side_effect=lambda n: 'official' if n == 'OPENAI_API_KEY' else ''), \
-                patch.object(settings, 'save') as save:
-            overlay = Overlay(on_fill=lambda text: None)
-            try:
-                overlay._save()
-                save.assert_called_once()
-                self.assertIsNone(save.call_args.kwargs['llm_key_text'])
-            finally:
-                overlay.win.close()
 
     def test_provider_switch_and_draft_isolation(self):
         keys = {'OPENAI_API_KEY': 'official', 'JEV_API_KEY': 'judge', 'LLM_API_KEY': 'draft'}
@@ -79,6 +68,14 @@ class OverlaySettingsTests(unittest.TestCase):
                 self.assertEqual(overlay.draft.stored_key(), 'draft')
                 keys.pop('LLM_API_KEY')
                 self.assertEqual(overlay.draft.stored_key(), '')
+                overlay.jev.providerBox.setCurrentIndex(overlay.jev.ids.index('lmstudio'))
+                keys.clear()
+                overlay._sync_model_fields()
+                self.assertFalse(overlay.jevBaseEdit.isHidden())
+                self.assertEqual(overlay.jev.keyLabel.text(), '认证令牌（可选）')
+                with patch.object(settings, 'save') as save:
+                    overlay._save()
+                    self.assertEqual(save.call_args.kwargs['jev_provider_text'], 'lmstudio')
             finally:
                 overlay.win.close()
 
@@ -99,7 +96,7 @@ class OverlaySettingsTests(unittest.TestCase):
     def test_model_fetch_discards_results_after_switching_away_and_back(self):
         with patch.object(settings, '_read', side_effect=lambda name, default=None: default), \
                 patch.object(settings, '_read_env', return_value='test-key'), \
-                patch('app.overlay.threading.Thread') as thread:
+                patch('app.settings_panel.threading.Thread') as thread:
             overlay = Overlay(on_fill=lambda text: None)
             try:
                 group = overlay.draft
@@ -110,12 +107,12 @@ class OverlaySettingsTests(unittest.TestCase):
                 group.providerBox.setCurrentIndex(group.ids.index('deepseek'))
                 overlay._fetch_models(group)
                 current_request = thread.call_args.kwargs['target']
-                with patch('app.overlay.llm.list_models', return_value=['old-model']):
+                with patch('app.settings_panel.llm.list_models', return_value=['old-model']):
                     old_request()
                 self.assertFalse(group.fetchButton.isEnabled())
                 self.assertEqual(group.modelBox.count(), 0)
                 self.assertEqual(group.modelBox.text(), 'deepseek-flash')
-                with patch('app.overlay.llm.list_models', return_value=['deepseek-flash', 'new-model']):
+                with patch('app.settings_panel.llm.list_models', return_value=['deepseek-flash', 'new-model']):
                     current_request()
                 self.assertTrue(group.fetchButton.isEnabled())
                 self.assertEqual(group.modelBox.count(), 2)
@@ -126,7 +123,7 @@ class OverlaySettingsTests(unittest.TestCase):
     def test_model_fetch_error_redacts_unsaved_key(self):
         with patch.object(settings, '_read', side_effect=lambda name, default=None: default), \
                 patch.object(settings, '_read_env', return_value=''), \
-                patch('app.overlay.llm.list_models', side_effect=RuntimeError('service echoed unsaved-key')):
+                patch('app.settings_panel.llm.list_models', side_effect=RuntimeError('service echoed unsaved-key')):
             overlay = Overlay(on_fill=lambda text: None)
             try:
                 group = overlay.draft

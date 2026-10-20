@@ -1,0 +1,10 @@
+[
+  {"id":"group_family","relationship":"family","reply_to":"妈妈","messages":[["her","到了给我说一声，我有点担心。","妈妈"],["her","烦死了你，能不能别管我！","弟弟"]],"high":["intent_reminder","tone_concerned"],"low":["tone_angry","intent_accountability"],"replies":["妈，到了我就告诉你。","弟弟你别吵了。","我早就到家了。"],"best":0},
+  {"id":"group_apology","relationship":"colleagues","reply_to":"小李","messages":[["her","为什么还没交，谁来负责？","小王"],["her","刚才是我理解错了，不好意思。","小李"]],"high":["intent_apology"],"low":["tone_angry","intent_accountability"],"replies":["那你现在必须赔偿。","没关系，把事情说清楚就好。","小王，别生气。"],"best":1},
+  {"id":"emotional_support","relationship":"romantic partners","messages":[["her","今天真的有点累，想听你安慰我一下。"]],"high":["intent_care"],"low":["tone_angry","intent_accountability"],"replies":["你自己想办法。","我已经买好机票了。","辛苦啦，今天发生什么事了，跟我说说吧。"],"best":2},
+  {"id":"hesitation","relationship":"colleagues","messages":[["her","我还没想好，两个方案都有优点，再给我一点时间考虑吧。"]],"high":["tone_hesitant"],"low":["tone_angry","intent_thanks"],"replies":["好，你再考虑一下，需要讨论的话随时找我。","那就按你选的第二个方案做。","这有什么好想的？"],"best":0},
+  {"id":"urgent_deadline","relationship":"colleagues","messages":[["her","还有十分钟截止，麻烦现在就发我最终版，来不及了。"]],"high":["tone_urgent","intent_urging","intent_action"],"low":["intent_thanks"],"replies":["我已经发完了，客户也确认了。","我马上核对最终版，确认后尽快发你。","下个月再说吧。"],"best":1},
+  {"id":"friendly_joke","relationship":"friends","messages":[["her","你这个人也太会挑餐厅了吧，次次都好吃，哈哈，下次继续跟你混。"]],"high":["tone_friendly","tone_relaxed"],"low":["tone_angry","tone_sarcastic"],"replies":["你阴阳怪气什么？","我已经订好明晚七点的座位。","哈哈，下次发现好吃的再一起去。"],"best":2},
+  {"id":"implicit_dissatisfaction","relationship":"romantic partners","messages":[["her","没事，你忙你的吧。我已经等了两个小时了。"]],"high":["tone_dissatisfied"],"low":["intent_thanks","tone_relaxed"],"replies":["让你等了这么久，是我没及时回应，抱歉。","你都说没事了，那我继续忙。","我马上订机票过去。"],"best":0},
+  {"id":"mixed_language_thanks","relationship":"colleagues","messages":[["her","Thanks，今天多亏你提醒，我已经把申请交上去了。"]],"high":["intent_thanks"],"low":["tone_angry","tone_urgent"],"replies":["快点交，现在就交！","不客气，交上去就好。","已经批准了，放心吧。"],"best":1}
+]

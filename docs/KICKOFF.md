@@ -1,63 +1,36 @@
-# jev-chat-windows — 接续说明（OCR 版）
+# JevChat Windows — 开发接续说明
 
-个人用的聊天回复辅助工具，挂在自己电脑的微信旁边：读到对方最新消息 → 判断意图/情绪 →
-给出 3 条候选回复（已排序）→ 人一键**填入**微信输入框。**发送永远手动，程序不自动发。**
+程序在 Windows 上通过窗口截图和本地 OCR 读取微信 / KakaoTalk 的可见消息，再分析意图、语气和紧张度。回复由用户点击后生成；程序只填入输入框，发送由用户操作。
 
-## 硬约束（照做，别破）
+## 数据和凭据
 
-1. 只读**自己设备上、自己有权查看**的对话。
-2. 采集只用**窗口级截图 + 本地离线 OCR**。不 hook、不注入、不读微信数据库、不解密、不碰微信进程。
-3. **截图不落盘**：捕获得到的位图始终是内存里的对象（numpy/PIL），全程不写磁盘、不进日志、不上传。
-4. **绝不自动发送**，不点发送按钮；填入输入框后停手。
-5. **不碰钱**：转账、红包、收款相关界面元素一律不碰。
-6. OpenAI Decisions 判断使用 `OPENAI_API_KEY`，其他判断来源使用 `JEV_API_KEY`，回复起草独立使用 `LLM_API_KEY`。只从环境变量 / 注册表读取密钥，密钥不写入文件。
-7. Python 读写文件一律 `encoding='utf-8'`。
+- 采集与调试画面在内存中处理，OCR 提取的上下文提交到所选判断来源。
+- OpenAI 判断读取 `OPENAI_API_KEY`，其他云端判断读取 `JEV_API_KEY`，本地 LM Studio 可选认证读取 `LMSTUDIO_API_TOKEN`。起草统一读取独立的 `LLM_API_KEY`。
+- 密钥保存到 Windows 用户环境变量。普通配置保存在被 Git 忽略的 `config.json`，启动时加载为快照，保存通过原子替换更新；读取失败时明确报错。
+- 采集使用 Windows Graphics Capture，文字识别使用 RapidOCR / Windows OCR。填入前重新检查当前会话标题和输入区域，随后粘贴文字。
 
-## 为什么走 OCR（已实测的结论，别重测）
+## 当前结构
 
-- 目标窗口界面自绘在一块 GPU 合成画布上（`MMUIRenderSubWindowHW`）。UIA 树只有 2 个节点、**没有控件树**——实测证伪。
-- 所以唯一干净的非侵入采集路 = 截自己的微信窗口 + 本地 OCR。离线、零 token。
+| 文件 | 职责 |
+| --- | --- |
+| `main.py` | 会话状态、后台任务与版本校验；新消息和配置变化使旧结果失效 |
+| `app/worker.py` | 独立进程采集、识别和按会话增量对齐；故障停止并上报原因 |
+| `app/capture.py` / `app/ocr.py` | WGC 画面、区域定位、发言人识别和消息去重 |
+| `app/overlay.py` / `app/settings_panel.py` / `app/widgets.py` | 主界面、设置页和可复用控件 |
+| `core/intent.py` | 18 项意图、10 项语气和 1 项紧张度的独立评分题 |
+| `core/engine.py` | `analyze(messages, relationship)` 构建状态；`generate_replies(analysis)` 使用同一状态起草和排序 |
+| `core/jev_client.py` | OpenAI / OpenRouter / TypeSafe / LM Studio 判断来源路由 |
+| `core/draft.py` / `core/llm.py` | 一轮起草及三种生成协议；接受完整 JSON 字符串数组 |
 
-## 已经建好，直接用（`core/`，平台无关）
+分析是一次 29 题请求；起草是一次独立请求；两条及以上候选另发一次排序请求。排序失败保留平级候选并显示提示，单条候选直接展示。多标签分数互相独立，展示百分比是程度。
 
-| 文件 | 作用 |
-|---|---|
-| `core/jev_client.py` | Jev 判断 API 客户端（stdlib、脱敏、429/529 退避）。`ask(state, questions)` |
-| `core/questions.py` | 7 道判断题 + `build_state()` + `build_rank_question()` |
-| `core/draft.py` | 生成模型起草 3 条候选（OpenRouter，默认 DeepSeek）。解析器已自测 |
-| `core/engine.py` | **唯一入口** `analyze(messages, relationship)` → `{candidates, best_index, best_reply, answers, usage}` |
-| `tools/demo.py` | 端到端冒烟（需 key + 联网）：`python tools/demo.py` |
+## 开发与验证
 
-`messages` 形如 `[("her","中文"),("me","中文")]`，`from` 只用 `her`/`me`，最新一条在最后。
-引擎完全不关心消息怎么来的——OCR 把屏幕上的对话整理成这个 list 喂进 `analyze()` 即可。
+使用 Python 3.12，安装 `requirements.txt`。源码入口是 `python -X utf8 main.py`；工具通过模块运行，例如 `python -X utf8 -m tools.demo`。
 
-## 待建（新会话干这些）
+- 自动化验证：`python -X utf8 -m unittest discover -s tests -v`。测试使用独立配置。
+- 合成界面预览：`python -X utf8 -m tools.preview_ui --state draft`。
+- 本地决策评估：`python -X utf8 -m tools.evaluate_decisions --output docs/evaluations/local.json`。场景和高低标签阈值预先固定，结果保留完整答案和请求耗时。
+- 构建统一由 `tools/build_release.ps1` 执行；`build.bat` 和 GitHub 工作流调用同一入口。完整分发 onedir 文件夹。
 
-1. **`capture.py` — 窗口级截图到内存，不落盘**
-   - 目标窗口按进程名和主窗口标题挑，不按面积。
-   - 微信是 GPU 合成窗口，`PrintWindow` 容易黑屏 → **优先用 Windows Graphics Capture**
-     （pip `windows-capture`，帧直接是 numpy，可捕获被遮挡/GPU 窗口）。
-     兜底：`PrintWindow` 带 `PW_RENDERFULLCONTENT=2`；再兜底：区域抓屏（需窗口可见）。
-   - 返回内存位图，**绝不 `.save()`**。
-2. **`ocr.py` — 内存内 OCR + 分说话人**
-   - RapidOCR（`rapidocr-onnxruntime`）直接吃 numpy 数组，不落文件。
-   - 裁到聊天气泡区；按每段文字**框的 x 中心**分左右：右=me、左=her（可加气泡背景色过滤头像/时间戳/系统提示）。
-   - **diff**：跟上一帧比，只在冒出**新的 her 消息**时才触发下游（省 token，也避免重复分析）。
-   - `probe/probe_ocr.py` 里已有 x 阈值分左右的草稿，可参考。
-3. **`overlay.py` — 半透明置顶悬浮窗**：显示判断摘要 + 3 条候选（★ 推荐），每条一个「填入」按钮。
-   tkinter（`-topmost`/`-alpha`，stdlib）够用；要更顺再上 PySide6。
-4. **`fill.py` — 填入不发送**：把选中的候选写剪贴板 → 聚焦微信输入框 → 粘贴。**绝不发回车/点发送。**
-5. **`main.py` — 主循环**：capture → ocr → 检测新 her 消息 → `engine.analyze()` → overlay。
-   静默期不调 Jev（10 分钟无新消息 = 0 次调用）。
-
-## 技术坑备忘
-
-- GPU 窗口截图黑屏 → 用 Windows Graphics Capture，别用普通 BitBlt/PrintWindow。
-- 图片全程内存对象（numpy/PIL），OCR 引擎吃数组不吃路径，天然不落盘。
-- 中文 OCR：RapidOCR 够用；不够准就换 PaddleOCR 或只 OCR 裁剪后的聊天区。
-- 群聊按一对一分析会不准，先只做单聊。
-
-## 参考项目
-
-安卓原版 `Finderchangchang/jev-chat-JARVIS`（同一套 Jev 判断内核，采集是安卓无障碍）。
-Jev 接口、题目口径都跟 `core/` 里一致。
+审查记录见 `docs/reviews/2026-10-20-code-audit.md`；旧探针和原始实现保留在 Git 历史中。

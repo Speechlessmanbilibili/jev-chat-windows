@@ -1,18 +1,13 @@
-# ASCII only: pip on Chinese Windows decodes this file as GBK and chokes on UTF-8 comments.
-rapidocr-onnxruntime>=1.4,<2  # offline Chinese OCR; 1.2.x rejects det_limit_* ctor args and 1.4.x has no text_detector attr, so pin 1.4; all 1.4.x require Python <3.13 - on 3.13+ pip silently falls back to 1.2.3 (KeyError at startup)
-numpy                         # frames are numpy arrays; chat-area detection is all numpy
-windows-capture               # Windows Graphics Capture, captures GPU-composited windows
-PySide6-Fluent-Widgets        # overlay UI (pulls in PySide6)
-pillow                        # only for the synthetic images in probe/
-
-# model SDKs: one official client per protocol, no hand-written HTTP (see core/llm.py)
-openai>=2.0                   # OpenAI Decisions and Chat Completions; other compatible providers
-httpx[socks]                  # SOCKS proxy support, including the optional socksio dependency
-typesafe-sdk                  # Jev judging over TypeSafe direct (api.typesafe.ai)
-anthropic                     # Anthropic Messages
-google-genai                  # Google Gemini
-
-winsdk                        # Windows.Media.Ocr: the ko/ja recognizers RapidOCR's zh/en models lack
-
-# optional, only for the two old UIA probes (already disproved; install to reproduce)
-# uiautomation                # probe_win.py / probe_win2.py
+# Tested Windows runtime, Python 3.12.
+rapidocr-onnxruntime==1.4.4
+numpy==2.5.3
+windows-capture==2.0.1
+PySide6-Fluent-Widgets==1.11.3
+pillow==12.3.0
+openai==3.26.0
+httpx[socks]==0.28.1
+httpx2[socks]==2.13.1
+typesafe-sdk==0.7.2
+anthropic==1.11.0
+google-genai==2.28.0
+winsdk==1.0.0b10

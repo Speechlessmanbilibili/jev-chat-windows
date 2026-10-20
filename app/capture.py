@@ -90,11 +90,6 @@ def find_chat_hwnd(want=None):
     raise RuntimeError("未找到受支持的聊天窗口，请打开客户端和会话窗口。")
 
 
-def find_wechat_hwnd():
-    """老名字：只返回 hwnd，给还没改过来的调用方用。"""
-    return find_chat_hwnd()[0]
-
-
 def unminimize(hwnd):
     """Windows 不渲染最小化的窗口，什么截图法都拿不到画面。发现被最小化就无激活还原，再压到所有窗口最底下——
     看着跟收起来一样，但 DWM 继续画。不抢焦点、不动大小位置。返回是否动了手。"""
@@ -232,3 +227,26 @@ class Capture:
 
     def wait(self):
         self.ctl.wait()  # 采集线程若是报错死的，这里把错误抛出来
+
+
+def verify_chat(hwnd, expected_title, app=chatapps.DEFAULT):
+    """填入前重新采集标题和输入区，避免使用切换会话之前的缓存。"""
+    from app.ocr import read_title
+
+    cap = Capture(hwnd, settle=0, app=app)
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            frame = cap.settled()
+            if frame is not None:
+                area = chat_area(frame, app=app, scale=window_scale(hwnd))
+                if area is None:
+                    raise RuntimeError("输入区域尚未识别，请稍后重试。")
+                x0, y0, x1, _, _, pane_top = area
+                if read_title(frame[pane_top:y0, x0:x1], app) != expected_title:
+                    raise RuntimeError("会话已切换，请等待当前会话分析完成后再填入。")
+                return area[:4]
+            time.sleep(0.02)
+        raise RuntimeError("未取得当前会话画面，请重新开启采集。")
+    finally:
+        cap.stop()

@@ -66,21 +66,3 @@ def by_exe(exe: str) -> ChatApp | None:
 
 def get(key: str | None) -> ChatApp:
     return APPS.get(key or "", DEFAULT)
-
-
-if __name__ == "__main__":  # 自测：颜色规则用实测像素锁住，改错了当场炸
-    assert by_exe("kakaotalk.exe") is KAKAOTALK and by_exe("weixin.exe") is WECHAT
-    assert by_exe("chrome.exe") is None and get(None) is DEFAULT and get("kakaotalk") is KAKAOTALK
-    kakao_bubble, kakao_other, kakao_ground = (254, 229, 0), (255, 255, 255), (186, 206, 224)
-    assert KAKAOTALK.is_me(np.array(kakao_bubble))
-    assert not KAKAOTALK.is_me(np.array(kakao_other))
-    assert not KAKAOTALK.is_me(np.array(kakao_ground))
-    assert WECHAT.is_me(np.array((149, 236, 105))) and not WECHAT.is_me(np.array(kakao_bubble))
-    pane = np.full((400, 300, 3), kakao_ground, np.uint8)
-    assert KAKAOTALK.trim_top(pane) == 0 and WECHAT.trim_top(pane) == 0   # 공고 없는 화면
-    pane[20:60] = 255                      # 폭을 꽉 채운 흰 카드 = 공지
-    assert KAKAOTALK.trim_top(pane) == 60
-    pane2 = np.full((400, 300, 3), kakao_ground, np.uint8)
-    pane2[20:60, :150] = 255               # 반만 채운 흰색 = 그냥 기포
-    assert KAKAOTALK.trim_top(pane2) == 0
-    print("chatapps ok")

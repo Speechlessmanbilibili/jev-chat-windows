@@ -10,7 +10,6 @@ from rapidocr_onnxruntime import RapidOCR
 from app.chatapps import DEFAULT, ChatApp
 
 _ENGINES: dict = {}   # 按识别后端及语言缓存实例。
-_FELL_BACK = set()    # 记录初始化失败的后端，避免逐帧重复初始化。
 
 
 def _engine(app: ChatApp = DEFAULT):
@@ -20,17 +19,11 @@ def _engine(app: ChatApp = DEFAULT):
     RapidOCR 的内置模型只有中英文，韩日文全是乱码，所以这类界面走 Windows 自带 OCR
     （离线、随系统语言包装好，见 app/ocr_windows.py）；缺少识别器时显示安装提示。"""
     key = (app.ocr, app.ocr_lang)
-    if key in _FELL_BACK:
-        raise RuntimeError("缺少所需的 Windows OCR 语言组件，请在系统语言设置中安装后重新开启采集。")
     if key not in _ENGINES:
         want = app.ocr
         if want == "windows":
-            try:
-                from app.ocr_windows import WindowsOcr
-                _ENGINES[key] = WindowsOcr(app.ocr_lang or None)
-            except Exception as exc:
-                _FELL_BACK.add(key)
-                raise RuntimeError("缺少所需的 Windows OCR 语言组件，请在系统语言设置中安装后重新开启采集。") from exc
+            from app.ocr_windows import WindowsOcr
+            _ENGINES[key] = WindowsOcr(app.ocr_lang or None)
         else:
             _ENGINES[key] = RapidOCR(intra_op_num_threads=4, det_limit_type="max",
                                       det_limit_side_len=4000)
@@ -181,9 +174,14 @@ class Reader:
                     overlap = size
                     break
         if not overlap and self.seen:
-            # 当前画面与已知历史重叠但未到末尾，属于回看旧消息。
-            if any(matches(a, b) for a in self.seen for b in current):
-                return []
+            # OCR 可能漏掉中间一条旧消息；只跳过已知前缀，继续接收后面的新消息。
+            for start in range(len(self.seen)):
+                size = 0
+                for a, b in zip(self.seen[start:], current):
+                    if not matches(a, b):
+                        break
+                    size += 1
+                overlap = max(overlap, size)
         new = current[overlap:]
         self.seen.extend(new)
         del self.seen[:-500]

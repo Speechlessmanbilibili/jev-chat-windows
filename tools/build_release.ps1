@@ -12,7 +12,7 @@ if (-not (Test-Path -LiteralPath $PythonExecutable)) {
     throw '请先创建虚拟环境并安装 requirements.txt 和 pyinstaller。'
 }
 $versionSource = Get-Content -LiteralPath (Join-Path $projectRoot 'app\version.py') -Encoding UTF8 -Raw
-if ($versionSource -notmatch 'VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"') {
+if ($versionSource -notmatch 'VERSION\s*=\s*"([0-9A-Za-z][0-9A-Za-z.-]*)"') {
     throw 'app/version.py 需要填写正式版本号。'
 }
 $releaseVersion = $Matches[1]
@@ -25,8 +25,6 @@ Push-Location -LiteralPath $projectRoot
 try {
     & $PythonExecutable -X utf8 -m unittest discover -s tests -v
     if ($LASTEXITCODE -ne 0) { throw '自动化测试失败，已停止编译。' }
-    & $PythonExecutable -X utf8 -m core.draft
-    if ($LASTEXITCODE -ne 0) { throw '候选解析检查失败，已停止编译。' }
     & $PythonExecutable -X utf8 -m PyInstaller --noconfirm --distpath $outputRoot --workpath $workRoot jev.spec
     if ($LASTEXITCODE -ne 0) { throw 'PyInstaller 编译失败。' }
     $packageRoot = Join-Path $outputRoot 'jev-chat-windows'
@@ -40,6 +38,7 @@ try {
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archivePath
     Write-Output ('发布包：' + $archivePath)
     Get-FileHash -LiteralPath $archivePath -Algorithm SHA256 | Format-List
+    if ($env:GITHUB_OUTPUT) { Add-Content -LiteralPath $env:GITHUB_OUTPUT -Value ('zip=' + $archivePath) }
 } finally {
     $env:JEV_BUILD_CONSOLE = $previousConsoleBuild
     Pop-Location

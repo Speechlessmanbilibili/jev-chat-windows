@@ -19,9 +19,7 @@ from core.intent import INTENT_QUESTIONS
 
 _STATES = ("ready", "draft", "all", "waiting", "loading", "error", "setup", "settings", "models", "paused", "debug")
 
-# 调试视图预览用的真微信截图（只读进内存，不改不存）；没有就退一张空画面
-_FRAME = Path("/private/tmp/claude-501/-Users-lpitiless-Documents-project-wechatjev"
-              "/26954c2b-b4b9-432e-bad7-0d0b803e4309/images/9.png")
+# 调试视图使用固定的合成画面。
 _AREA = (433, 152, 1298, 767)  # 那张图里的消息区，头部从 y=40 起
 # 消息区裁剪坐标的框：前面这些是真跑一遍 OCR 得到的，灰字/小字那两个是手摆的，凑齐六种颜色
 _BOXES = [
@@ -50,10 +48,8 @@ def _debug_packet():
 
     from PySide6.QtGui import QImage
 
-    img = QImage(str(_FRAME)) if _FRAME.exists() else QImage()
-    if img.isNull():
-        img = QImage(1303, 979, QImage.Format_RGB888)
-        img.fill(0x202524)
+    img = QImage(1303, 979, QImage.Format_RGB888)
+    img.fill(0x202524)
     img = img.convertToFormat(QImage.Format_RGB888)
     w, h = img.width(), img.height()
     rgb = b"".join(bytes(img.constScanLine(y))[:w * 3] for y in range(h))
@@ -149,7 +145,7 @@ def main() -> int:
             if value is not None:
                 demo_settings[name] = bool(value)
 
-    def fake_jev_models(provider, key, timeout=10):
+    def fake_jev_models(provider, key, timeout=10, base_url=None):
         """演示不联网：给一小撮假模型，让「获取模型」按钮在本地也走得通。"""
         if provider == "openai":
             return ["gpt-6-luna"]
@@ -165,13 +161,13 @@ def main() -> int:
     with patch("core.jev_client.list_models", fake_jev_models), patch(
             "core.llm.list_models", fake_llm_models), patch.multiple(
         settings,
-        has_key=lambda: bool(demo_settings["jev_key"]),
-        has_jev_key=lambda: bool(demo_settings["jev_key"]),
+        analysis_ready=lambda: bool(demo_settings["jev_key"]),
         has_llm_key=lambda: bool(demo_settings["llm_key"]),
         jev_key=lambda provider=None: demo_settings["jev_key"],
         llm_key=lambda provider=None: demo_settings["llm_key"],
         relationship=lambda: demo_settings["relationship"],
         context=lambda: demo_settings["context"],
+        _read=lambda name, default=None: demo_settings.get(name, default),
         language=lambda: demo_settings["lang"],
         jev_provider=lambda: demo_settings["jev_provider"],
         jev_model=lambda: demo_settings["jev_model"],

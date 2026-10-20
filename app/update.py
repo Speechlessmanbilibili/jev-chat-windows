@@ -39,36 +39,3 @@ def check_latest(current: str, timeout=6) -> tuple[str, str] | None:
         return tag, url
     except Exception:
         return None
-
-
-if __name__ == "__main__":
-    # 自测：不碰网络，monkeypatch urlopen。跑法：python -m app.update
-    from io import BytesIO
-    from unittest.mock import patch
-
-    def _fake(payload):
-        def _open(*a, **k):
-            return BytesIO(json.dumps(payload).encode())
-        return _open
-
-    def _boom(*a, **k):
-        raise OSError("offline")
-
-    assert parse_version("1.2.3") == (1, 2, 3)
-    assert parse_version("0.0.0-dev") is None
-    assert parse_version("dev") is None
-
-    with patch("urllib.request.urlopen", _fake({"tag_name": "v9.9.9", "html_url": "https://x/release"})):
-        assert check_latest("1.0.0") == ("9.9.9", "https://x/release")  # 新版本 → 元组
-
-    with patch("urllib.request.urlopen", _fake({"tag_name": "v1.0.0", "html_url": "https://x/release"})):
-        assert check_latest("1.0.0") is None  # 同版本 → None
-        assert check_latest("1.5.0") is None  # 比 latest 还新（本地跑的开发分支）→ None
-
-    with patch("urllib.request.urlopen", _boom):
-        assert check_latest("1.0.0") is None  # 网络错误 → None
-
-    with patch("urllib.request.urlopen", _boom):
-        assert check_latest("0.0.0-dev") is None  # 开发版：根本不该走到 urlopen，_boom 也证明了这点
-
-    print("app/update.py 自测通过")

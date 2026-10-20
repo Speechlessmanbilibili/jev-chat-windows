@@ -1,0 +1,13 @@
+{
+  "preset": "",
+  "operation": {"fields": []},
+  "load": {
+    "fields": [
+      {"key": "decision.load.contextLength", "value": 8192},
+      {"key": "decision.load.llama.evalBatchSize", "value": 8192},
+      {"key": "decision.load.llama.physicalBatchSize", "value": 8192},
+      {"key": "decision.load.llama.acceleration.offloadRatio", "value": 1},
+      {"key": "decision.load.llama.flashAttention", "value": true}
+    ]
+  }
+}

@@ -52,9 +52,10 @@ def set_clipboard(text):
     raise RuntimeError("OpenClipboard 连续失败，剪贴板被其他程序占用")
 
 
-def fill(hwnd, area, text):
+def fill(hwnd, area, text, *, expected_title, app=None):
     """area = 消息区 (x0, y0, x1, y1)；输入框就在底线 y1 下面。"""
-    from app.capture import unminimize
+    from app.capture import unminimize, verify_chat
+    from app.chatapps import get
 
     if not hwnd or not u32.IsWindow(hwnd):
         raise RuntimeError("聊天窗口已关闭，请重新开启采集。")
@@ -75,6 +76,9 @@ def fill(hwnd, area, text):
     if u32.GetForegroundWindow() != hwnd:
         raise RuntimeError("无法激活聊天窗口，请切换到该窗口后重试。")
 
+    area = verify_chat(hwnd, expected_title, get(app))
+    if u32.GetForegroundWindow() != hwnd:
+        raise RuntimeError("当前窗口已切换，请返回聊天窗口后重试。")
     r = w.RECT()
     if ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 9, ctypes.byref(r), ctypes.sizeof(r)) != 0:
         if not u32.GetWindowRect(hwnd, ctypes.byref(r)):

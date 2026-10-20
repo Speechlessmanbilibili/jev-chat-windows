@@ -4,18 +4,12 @@
 只往队列里丢纯 tuple/str（底色 bg 是 numpy，留在这边不过队列）。帧全程内存，绝不落盘。"""
 import ctypes
 import time
-import traceback
 
 import numpy as np
 
 from app import chatapps
 from app.capture import Capture, chat_area, unminimize, window_scale
 from app.ocr import Reader, read_title
-
-
-def _err(q):
-    """异常压成一行发给父进程，子进程的 stderr 一般没人看得见。"""
-    q.put(("status", " ".join(traceback.format_exc().split())[-200:]))
 
 
 def _packet(full, area, title, reader, lines):
@@ -58,8 +52,7 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
                 started, received, waiting_warned = time.monotonic(), False, False
             except Exception as e:
                 q.put(("dead", "无法开始采集：" + (" ".join(str(e).split())[:120] or type(e).__name__)))
-                enabled.clear()  # 自己清掉，下一圈就去等着，别一秒重试几十次
-                continue
+                return
             q.put(("resumed",))
         if not cap.alive():
             break
@@ -114,11 +107,14 @@ def run(q, hwnd, enabled, debug_on, app_key=None):
                         q.put(("lines", title, new, rect))
                 if debug_on.is_set():
                     q.put(("debug", _packet(full, area, title, reader, lines)))
-        except Exception:
-            _err(q)  # 一帧出错不退出
+        except Exception as exc:
+            cap.stop()
+            q.put(("dead", f"识别已停止：{type(exc).__name__}: {exc}"))
+            return
         time.sleep(0.05)
-    q.put(("dead", "采集已停止，请确认聊天窗口已打开后重新开启采集。"))
     try:
-        cap.wait()  # 采集线程若是报错死的，这里把错抛出来
-    except Exception:
-        _err(q)
+        cap.wait()
+    except Exception as exc:
+        q.put(("dead", f"采集已停止：{exc}"))
+    else:
+        q.put(("dead", "采集已停止，请确认聊天窗口已打开后重新开启采集。"))

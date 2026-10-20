@@ -67,7 +67,7 @@ def fill_reply(text):
         target = target_of(ov.current_chat())  # 填进去的是界面上正看着的那个会话的对象
         if target:
             text = f"@{target} " + text  # 纯文本，微信不认成真正的 @，只是让群里看得出在跟谁说
-    fill(state["hwnd"], state["area"], text)
+    fill(state["hwnd"], state["area"], text, expected_title=state["chat"], app=state.get("app"))
 
 
 def spawn_worker():
@@ -130,7 +130,6 @@ def analyze_bg(msgs, title, revision, reply_to=None, options=None):
     try:
         options = options or settings.analysis_options()
         result = analyze(msgs, reply_to=reply_to, **options)
-        result.update(_messages=msgs, _options=options, _rev=revision)
         results.put(("ok", result, title, revision))
     except Exception as e:
         results.put(("err", f"{T('分析失败: ')}{e}", title, revision))
@@ -144,7 +143,7 @@ def check_update_bg():
 
 
 def start_analyze(title, msgs):
-    if not settings.has_jev_key():
+    if not settings.analysis_ready():
         ov.set_status("请先配置分析模型及 API 密钥。", "warning")
         return
     chat = chat_of(title)
@@ -176,8 +175,7 @@ def invalidate_chat(title):
 
 def draft_bg(title, revision, analysis, options=None):
     try:
-        result = generate_replies(analysis["_messages"], analysis=analysis,
-                                 **analysis["_options"], **(options or settings.draft_options()))
+        result = generate_replies(analysis, **(options or settings.draft_options()))
         draft_results.put(("ok", result, title, revision))
     except Exception as e:
         draft_results.put(("err", f"{T('起草失败：')}{e}", title, revision))
@@ -349,8 +347,9 @@ def tick():
                 chat["result"].update(draft_busy=False, draft_error=result)
             if title == ov.current_chat():
                 ov.show(chat["result"])
-    except Exception:
-        traceback.print_exc()  # 一帧出错不退出
+    except Exception as exc:
+        traceback.print_exc()
+        capture_stopped(f"处理已停止：{exc}")
     ov.after(50, tick)
 
 
@@ -362,6 +361,13 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
 
         raise SystemExit(preview_main())
     ctypes.windll.user32.SetProcessDPIAware()
+    try:
+        settings.load()
+    except settings.ConfigError as exc:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        app = QApplication(sys.argv)
+        QMessageBox.critical(None, "配置读取失败", str(exc))
+        raise SystemExit(1)
     q = multiprocessing.Queue()
     capture_on = multiprocessing.Event()  # 父子进程共用的开关，置位=采集
     debug_on = multiprocessing.Event()  # 同上，置位=子进程往队列里送整帧给调试窗
@@ -380,7 +386,7 @@ if __name__ == "__main__":  # Windows 的 spawn 会让子进程重新执行本�
         child = spawn_worker()
     if settings.debug_view():  # 上次开着就直接开回来
         set_debug(True)
-    if not settings.has_jev_key():
+    if not settings.analysis_ready():
         ov.set_status("请先配置分析模型及 API 密钥。", "warning")
         ov.after(0, ov.open_settings)
     if settings.check_update() and update.parse_version(VERSION):  # 开发版没有版本号，不查也不烦源码用户

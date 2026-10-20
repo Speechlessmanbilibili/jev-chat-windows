@@ -12,10 +12,7 @@ from contextlib import closing
 import re
 from threading import Lock
 
-try:  # 当模块导入 / 当脚本直接跑 都能用
-    from .jev_client import JevError, _fail
-except ImportError:
-    from jev_client import JevError, _fail
+from .jev_client import JevError, _fail
 
 # Anthropic 开思考模式时的预算：起草三句话用不上更多；max_tokens 必须比它大，下面会兜住
 _THINK_BUDGET = 2048
@@ -61,7 +58,7 @@ def chat(protocol: str, base_url: str | None, api_key: str, model: str, system: 
          headers: dict | None = None, timeout: float = 30) -> str:
     """发一轮对话，返回模型输出的纯文本。
 
-    user_turns: 用户/助手交替的文本，奇数条，首尾都是用户说的（追问补齐候选就是 3 条）。
+    user_turns: 用户/助手交替的文本，奇数条，首尾都是用户说的。
     thinking: 思考模式。OpenAI 协议没有统一字段，各家自己的开关由调用方经 extra_body 带进来；
               anthropic / gemini 是协议自带的参数，这里直接处理。
     """
@@ -88,7 +85,7 @@ def _openai(base_url, api_key, model, system, user_turns, temperature, max_token
             options["temperature"] = temperature
     try:
         with closing(openai.OpenAI(base_url=base_url or None, api_key=api_key,
-                               timeout=timeout, max_retries=2,
+                               timeout=timeout, max_retries=0,
                                **({"default_headers": headers} if headers else {}))) as client:
             resp = client.chat.completions.create(
                 model=model,
@@ -103,7 +100,7 @@ def _openai(base_url, api_key, model, system, user_turns, temperature, max_token
         if getattr(choice.message, "refusal", None):
             raise JevError("起草服务未接受本次请求，请调整上下文后重试。")
         return choice.message.content or ""
-    except Exception as exc:
+    except (openai.APIError, JevError) as exc:
         _fail(exc, "起草", api_key)
 
 
@@ -117,14 +114,14 @@ def _anthropic(base_url, api_key, model, system, user_turns, temperature, max_to
         max_tokens = max(max_tokens, _THINK_BUDGET + 1024)  # max_tokens 得装得下思考 + 正文
     try:
         with closing(anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
-                                         timeout=timeout, max_retries=2)) as client:
+                                         timeout=timeout, max_retries=0)) as client:
             message = client.messages.create(model=model, system=system,
                                              messages=_turns(user_turns), max_tokens=max_tokens,
                                              **extra)
         if getattr(message, "stop_reason", None) == "max_tokens":
             raise JevError("起草输出已达到长度上限，请关闭思考模式或更换模型后重试。")
         return "".join(b.text for b in message.content if getattr(b, "type", "") == "text")
-    except Exception as exc:
+    except (anthropic.APIError, JevError) as exc:
         _fail(exc, "起草", api_key)
 
 
@@ -141,6 +138,9 @@ def _gemini_client(base_url, api_key, timeout):
 
 def _gemini(base_url, api_key, model, system, user_turns, temperature, max_tokens,
             thinking, timeout) -> str:
+    from google.genai.errors import APIError
+    from httpx2 import HTTPError
+
     try:
         client, types = _gemini_client(base_url, api_key, timeout)
         config_args = dict(system_instruction=system, temperature=temperature, max_output_tokens=max_tokens)
@@ -152,7 +152,7 @@ def _gemini(base_url, api_key, model, system, user_turns, temperature, max_token
         with closing(client):
             try:
                 resp = client.models.generate_content(model=model, contents=contents, config=config)
-            except Exception as exc:
+            except APIError as exc:
                 if not disable or not _zero_thinking_rejected(exc):
                     raise
                 resp = client.models.generate_content(model=model, contents=contents,
@@ -161,7 +161,7 @@ def _gemini(base_url, api_key, model, system, user_turns, temperature, max_token
                 with _GEMINI_THINKING_LOCK:
                     _GEMINI_DEFAULT_THINKING.add(_gemini_key(base_url, model))
         return resp.text or ""
-    except Exception as exc:
+    except (APIError, HTTPError, JevError) as exc:
         _fail(exc, "起草", api_key)
 
 
@@ -173,142 +173,29 @@ def list_models(protocol: str, base_url: str | None, api_key: str,
 
         try:
             with closing(anthropic.Anthropic(base_url=base_url or None, api_key=api_key,
-                                             timeout=timeout, max_retries=1)) as client:
+                                             timeout=timeout, max_retries=0)) as client:
                 ids = [m.id for m in client.models.list()]
-        except Exception as exc:
+        except anthropic.APIError as exc:
             _fail(exc, "取模型列表", api_key)
     elif protocol == "gemini":
+        from google.genai.errors import APIError
+        from httpx2 import HTTPError
+
         try:
             client, _ = _gemini_client(base_url, api_key, timeout)
             # 名字带 models/ 前缀，调用时用不上，剥掉
             with closing(client):
                 ids = [str(m.name).removeprefix("models/") for m in client.models.list() if m.name]
-        except Exception as exc:
+        except (APIError, HTTPError) as exc:
             _fail(exc, "取模型列表", api_key)
     else:
         import openai
 
         try:
             with closing(openai.OpenAI(base_url=base_url or None, api_key=api_key,
-                                   timeout=timeout, max_retries=1,
+                                   timeout=timeout, max_retries=0,
                                    **({"default_headers": headers} if headers else {}))) as client:
                 ids = [m.id for m in client.models.list()]
-        except Exception as exc:
+        except openai.APIError as exc:
             _fail(exc, "取模型列表", api_key)
     return sorted(set(ids))
-
-
-if __name__ == "__main__":
-    # ponytail: 不联网。在 SDK 边界上把客户端换成假的，只验「喂给 SDK 的参数对不对」——
-    # 各家的字段名和思考开关是这层唯一会坏的东西。config 对象仍用真类型，字段名写错会当场炸。
-    import os
-    import types as _t
-
-    import anthropic
-    import openai
-    from google import genai
-
-    seen: dict = {}
-
-    def _fake(kind):
-        """记下构造参数和调用参数的假客户端。"""
-        def make(**kw):
-            seen[kind + ".init"] = kw
-            def call(**k):
-                seen[kind + ".call"] = k
-                if kind == "openai":
-                    return _t.SimpleNamespace(choices=[_t.SimpleNamespace(
-                        message=_t.SimpleNamespace(content='["甲","乙","丙"]'))])
-                if kind == "anthropic":
-                    return _t.SimpleNamespace(content=[
-                        _t.SimpleNamespace(type="thinking", thinking="…"),
-                        _t.SimpleNamespace(type="text", text="嗯")])
-                return _t.SimpleNamespace(text="嗯")
-            listing = {"openai": [_t.SimpleNamespace(id="b"), _t.SimpleNamespace(id="a"),
-                                  _t.SimpleNamespace(id="a")],
-                       "anthropic": [_t.SimpleNamespace(id="claude-y"), _t.SimpleNamespace(id="claude-x")],
-                       "gemini": [_t.SimpleNamespace(name="models/gemini-2"),
-                                  _t.SimpleNamespace(name="models/gemini-1")]}[kind]
-            models = _t.SimpleNamespace(list=lambda **_: listing, generate_content=call)
-            return _t.SimpleNamespace(
-                close=lambda: None, models=models, messages=_t.SimpleNamespace(create=call),
-                chat=_t.SimpleNamespace(completions=_t.SimpleNamespace(create=call)))
-        return make
-
-    openai.OpenAI, anthropic.Anthropic, genai.Client = (
-        _fake("openai"), _fake("anthropic"), _fake("gemini"))
-
-    # OpenAI 协议：base_url / key / model / 思考字段都得原样到位
-    out = chat("openai", "https://api.deepseek.com", "sk-ds", "deepseek-flash", "S", ["U"],
-               temperature=1.2, max_tokens=400, extra_body={"thinking": {"type": "disabled"}})
-    assert out == '["甲","乙","丙"]'
-    assert seen["openai.init"]["base_url"] == "https://api.deepseek.com"
-    assert seen["openai.init"]["api_key"] == "sk-ds" and seen["openai.init"]["max_retries"] == 2
-    assert seen["openai.call"]["model"] == "deepseek-flash"
-    assert seen["openai.call"]["extra_body"] == {"thinking": {"type": "disabled"}}
-    assert seen["openai.call"]["temperature"] == 1.2 and seen["openai.call"]["max_tokens"] == 400
-    assert seen["openai.call"]["messages"] == [
-        {"role": "system", "content": "S"}, {"role": "user", "content": "U"}]
-    # 没有思考开关的来源（extra_body 空）就不该出现这个字段
-    chat("openai", "https://api.moonshot.cn/v1", "k", "kimi", "S", ["U"], extra_body={})
-    assert "extra_body" not in seen["openai.call"]
-    # 来源要求的额外头（OpenCode Go）要进 SDK，别的来源不带
-    chat("openai", "https://opencode.ai/zen/go/v1", "k", "deepseek-v4.1-flash", "S", ["U"],
-         headers={"x-opencode-session": "sid", "User-Agent": "jev-chat-windows"})
-    assert seen["openai.init"]["default_headers"] == {
-        "x-opencode-session": "sid", "User-Agent": "jev-chat-windows"}
-    chat("openai", "https://api.deepseek.com", "k", "m", "S", ["U"])
-    assert "default_headers" not in seen["openai.init"]
-    # 追问补齐：user / assistant / user 三轮
-    chat("openai", "", "k", "m", "S", ["U1", "A1", "U2"])
-    assert [m["role"] for m in seen["openai.call"]["messages"]] == [
-        "system", "user", "assistant", "user"]
-    assert seen["openai.init"]["base_url"] is None  # 空 base_url = 用 SDK 默认地址
-
-    # Anthropic：system 单独传，SDK 已移除 temperature，max_tokens 仍需装得下思考预算。
-    assert chat("anthropic", "https://api.anthropic.com", "sk-an", "claude-x", "S", ["U"],
-                temperature=1.2, max_tokens=400) == "嗯"
-    assert seen["anthropic.call"]["system"] == "S" and "thinking" not in seen["anthropic.call"]
-    assert seen["anthropic.call"]["messages"] == [{"role": "user", "content": "U"}]
-    assert "temperature" not in seen["anthropic.call"]
-    chat("anthropic", "", "k", "claude-x", "S", ["U"], temperature=1.2, max_tokens=400, thinking=True)
-    assert seen["anthropic.call"]["thinking"] == {"type": "enabled", "budget_tokens": _THINK_BUDGET}
-    assert "temperature" not in seen["anthropic.call"]
-    assert seen["anthropic.call"]["max_tokens"] > _THINK_BUDGET
-
-    # Gemini：助手那一轮叫 model；关思考 = thinking_budget 0，开 = 不传让模型自己定
-    assert chat("gemini", "", "k", "gemini-2", "S", ["U1", "A1", "U2"], max_tokens=400) == "嗯"
-    cfg = seen["gemini.call"]["config"]
-    assert cfg.system_instruction == "S" and cfg.max_output_tokens == 400
-    assert cfg.thinking_config.thinking_budget == 0
-    assert [c.role for c in seen["gemini.call"]["contents"]] == ["user", "model", "user"]
-    assert seen["gemini.call"]["contents"][0].parts[0].text == "U1"
-    chat("gemini", "https://my.proxy", "k", "gemini-2", "S", ["U"], thinking=True)
-    assert seen["gemini.call"]["config"].thinking_config is None
-    assert seen["gemini.init"]["http_options"].base_url == "https://my.proxy"
-    assert seen["gemini.init"]["http_options"].timeout == 30000  # 毫秒，不是秒
-
-    # 列模型：去重排序；gemini 剥掉 models/ 前缀
-    assert list_models("openai", "https://x/v1", "k") == ["a", "b"]
-    assert "default_headers" not in seen["openai.init"]
-    list_models("openai", "https://x/v1", "k", headers={"User-Agent": "jev-chat-windows"})
-    assert seen["openai.init"]["default_headers"] == {"User-Agent": "jev-chat-windows"}
-    assert list_models("anthropic", "", "k") == ["claude-x", "claude-y"]
-    assert list_models("gemini", "", "k") == ["gemini-1", "gemini-2"]
-
-    # 出错 → 一句人话的 JevError，带上状态码，不泄露 key
-    os.environ["DEEPSEEK_API_KEY"] = "sk-secret"
-
-    class _Boom(Exception):
-        status_code = 401
-
-    def _explode(**kw):
-        raise _Boom("bad key sk-secret")
-
-    openai.OpenAI = _explode
-    try:
-        chat("openai", "", "sk-secret", "m", "S", ["U"])
-        raise SystemExit("应当抛错")
-    except JevError as e:
-        assert e.status == 401 and "密钥被拒" in str(e) and "sk-secret" not in str(e)
-    print("llm ok")

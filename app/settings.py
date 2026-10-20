@@ -15,7 +15,7 @@ import tempfile
 import threading
 from functools import wraps
 
-from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_PROVIDERS, LEGACY, key_env
+from core.providers import CUSTOM, DRAFT_PROVIDERS, JEV_PROVIDERS, LEGACY, LMSTUDIO_BASE, key_env
 
 _ROOT = (os.path.dirname(sys.executable) if getattr(sys, "frozen", False)
          else os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -25,6 +25,12 @@ _DEFAULT_CONTEXT = 10
 _DEFAULT_JEV = "openai"
 _DEFAULT_DRAFT = "deepseek"
 _CONFIG_LOCK = threading.RLock()
+_CACHE = None
+_CACHE_PATH = None
+
+
+class ConfigError(RuntimeError):
+    """配置文件读取失败，交给启动界面显示。"""
 
 
 def _locked(function):
@@ -45,14 +51,26 @@ def _flag(name, default=False):
     return value if isinstance(value, bool) else default
 
 
+@_locked
+def load(*, reload=False):
+    """启动时读取一次；保存成功后同步替换内存快照。"""
+    global _CACHE, _CACHE_PATH
+    if reload or _CACHE is None or _CACHE_PATH != _CONFIG:
+        try:
+            with open(_CONFIG, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                raise ValueError("配置内容应为 JSON 对象")
+        except FileNotFoundError:
+            data = {}
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"无法读取配置文件 {_CONFIG}：{exc}") from exc
+        _CACHE, _CACHE_PATH = data, _CONFIG
+    return _CACHE
+
+
 def _read(name: str, default=None):
-    """读 config.json 里的一个字段；每次都重新读文件，改设置不用重启进程。"""
-    try:
-        with open(_CONFIG, encoding="utf-8") as f:
-            data = json.load(f)
-        value = data.get(name) if isinstance(data, dict) else None
-    except (OSError, ValueError):
-        return default
+    value = load().get(name)
     return default if value is None else value
 
 def relationship() -> str:
@@ -84,6 +102,10 @@ def jev_provider() -> str:
 def jev_model() -> str:
     """判断模型 id；空 = 用该来源的默认模型。"""
     return _text("jev_model", JEV_PROVIDERS[jev_provider()].default)
+
+def jev_base_url() -> str:
+    return _text("jev_base_url", LMSTUDIO_BASE) if jev_provider() == "lmstudio" else ""
+
 
 def draft_provider() -> str:
     """起草走哪家（见 core/providers.DRAFT_PROVIDERS）。老配置里的 openrouter/deepseek 照样认。"""
@@ -162,8 +184,8 @@ def jev_key(provider: str | None = None) -> str:
     """按当前或指定判断来源读取密钥。"""
     return _get_key(key_env(provider or jev_provider(), "jev"))
 
-def has_jev_key() -> bool:
-    return bool(jev_key())
+def analysis_ready() -> bool:
+    return jev_provider() == "lmstudio" or bool(jev_key())
 
 def llm_key(provider: str | None = None) -> str:
     """起草那把 key，所有语言模型来源共用。"""
@@ -172,18 +194,20 @@ def llm_key(provider: str | None = None) -> str:
 def has_llm_key() -> bool:
     return bool(llm_key())
 
-has_key = has_jev_key  # 旧名字：界面上「配没配好」问的就是判断模型这把 key
 
 @_locked
 def save(relationship_text: str | None = None, context_n: int | None = None, *,
          jev_provider_text: str | None = None, jev_key_text: str | None = None,
-         jev_model_text: str | None = None, draft_provider_text: str | None = None,
+         jev_model_text: str | None = None, jev_base_url_text: str | None = None,
+         draft_provider_text: str | None = None,
          llm_key_text: str | None = None, draft_model_text: str | None = None,
          draft_base_url_text: str | None = None, reply_target_on: bool | None = None,
          style_text: str | None = None, thinking_on: bool | None = None,
          check_update_on: bool | None = None, debug_view_on: bool | None = None,
          lang_text: str | None = None) -> None:
     """每个参数为空/None = 保留当前值。两把 key 写进程环境 + HKCU\\Environment，不写任何文件。"""
+    global _CACHE, _CACHE_PATH
+    load()
     jev = jev_provider_text if jev_provider_text in JEV_PROVIDERS else jev_provider()
     draft = draft_provider_text if draft_provider_text in DRAFT_PROVIDERS else draft_provider()
     jev_env, draft_env = key_env(jev, "jev"), key_env(draft, "draft")
@@ -206,6 +230,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
         "relationship": relationship_text or relationship(), "context": n,
         "style": keep(style_text, "style"),
         "jev_provider": jev, "jev_model": keep(jev_model_text, "jev_model"),
+        "jev_base_url": keep(jev_base_url_text, "jev_base_url"),
         "draft_provider": draft, "draft_model": keep(draft_model_text, "draft_model"),
         "draft_base_url": keep(draft_base_url_text, "draft_base_url"),
         "reply_target": flag(reply_target_on, reply_target),
@@ -225,6 +250,7 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
             f.flush()
             os.fsync(f.fileno())
         os.replace(temporary, _CONFIG)
+        _CACHE, _CACHE_PATH = data, _CONFIG
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)  # 清理本次写入产生的临时文件。
@@ -234,7 +260,8 @@ def save(relationship_text: str | None = None, context_n: int | None = None, *,
 def analysis_options() -> dict:
     """同一次分析使用一致的配置快照。"""
     return dict(relationship=relationship(), context=context(),
-                jev_provider=jev_provider(), jev_model=jev_model() or None)
+                jev_provider=jev_provider(), jev_model=jev_model() or None,
+                jev_base_url=jev_base_url() or None)
 
 
 @_locked

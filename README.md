@@ -1,10 +1,10 @@
-# JevChat Windows · OpenAI Decisions 版
+# JevChat Windows · 云端与本地决策
 
 JevChat Windows 是一个运行在 Windows 上的聊天意图分析工具。程序读取聊天窗口中可见的消息，通过本地 OCR 提取文字，再调用判断模型评估对方的意图、语气和对话紧张度。
 
 首页以百分比展示各项意图和语气的体现程度。回复起草默认折叠；需要时展开并点击“生成回复”，即可获取最多三条候选，选择一条填入聊天输入框，检查和修改后自行发送。
 
-本仓库由 [jev-chat/jev-chat-windows](https://github.com/jev-chat/jev-chat-windows) fork 而来，新增了 OpenAI Decisions API 支持，并保留 OpenRouter 和 TypeSafe 判断来源。
+本仓库由 [jev-chat/jev-chat-windows](https://github.com/jev-chat/jev-chat-windows) fork 而来，支持 OpenAI Decisions、LM Studio 本地决策、OpenRouter 和 TypeSafe 判断来源。
 
 ## 下载与运行
 
@@ -63,6 +63,19 @@ $env:OPENAI_API_KEY = "你的 OpenAI API 密钥"
 ```
 
 程序向 `https://api.openai.com/v1/decisions` 提交聊天文字和判断题。每次新消息的分析使用一次请求，包含 18 道意图评分题、10 道语气评分题和一道紧张度评分题，类型均为 `score`。生成回复后的候选排序另用 `choice` 题。设置页的“获取模型”会检查 `gpt-6-luna` 的访问权限并提供该模型。接口说明见 [OpenAI Decisions 官方文档](https://developers.openai.com/api/docs/guides/decisions)。
+
+### LM Studio 本地决策
+
+LM Studio 加载决策模型并开启本地服务后，在判断来源中选择“LM Studio 本地决策”，地址填写 `http://127.0.0.1:1234`，模型填写加载时的标识，例如 `d3-mini`。地址填写服务根地址，程序使用原生 `/v1/systemone` 接口。服务未启用认证时密钥可留空；启用认证时填写令牌，保存到 `LMSTUDIO_API_TOKEN`。
+
+“获取模型”只显示决策模型，已加载时使用实际实例标识。D3 的加载设置需将上下文长度、Evaluation Batch Size 和 Physical Batch Size 均设为 8192，并使用全 GPU 卸载；默认物理批大小 512 会触发非因果注意力断言。仓库提供 [D3 加载配置模板](tools/lmstudio-d3-mini.defaults.json)，可保存到 `%USERPROFILE%/.lmstudio/.internal/user-concrete-model-default-config/ggml-org/vllm-d3-mini-GGUF/vllm-d3-mini-Q8_0.gguf.json`。
+
+起草单独配置，适合本地执行评分、按需调用云端生成回复。
+
+```powershell
+lms load ggml-org/vllm-d3-mini-GGUF/vllm-d3-mini-Q8_0.gguf --gpu max -c 8192 --identifier d3-mini -y
+lms server start --bind 127.0.0.1 --port 1234
+```
 
 ### 回复起草
 
@@ -140,7 +153,7 @@ Gemini 明确拒绝关闭思考时，程序会省略该配置并重试一次。�
 
 | 控件 | 用途 |
 | --- | --- |
-| 当前会话 | 自动跟随聊天窗口中的会话，也可选择已采集的其他会话查看记录和结果。显示“浏览中”时，生成、复制和填入按钮停用；回到实际采集的会话后恢复。 |
+| 当前会话 | 自动跟随聊天窗口中的会话，也可选择已采集的其他会话查看记录和结果。显示“浏览中”时可复制候选；生成和填入在回到实际采集的会话后恢复。 |
 | 回复对象 | 启用群聊指定对象后显示。切换对象会重新分析该人的发言，回复候选仍需点击“生成回复”获取。 |
 | 添加 @姓名 | 在群聊回复前加上普通文本 `@姓名 `。需要客户端的正式提及提醒时，请在客户端中选择对应成员。 |
 | 采集开关 | 位于标题栏。暂停后停止窗口采集，当前会话已有的有效候选仍可复制或填入。 |
@@ -168,7 +181,7 @@ Gemini 明确拒绝关闭思考时，程序会省略该配置并重试一次。�
 | 启动时检查更新 | 默认开启；启动时查询一次本 fork 的最新 Release，有新版本时显示下载入口。 |
 | 调试视图 | 默认关闭；开启独立窗口，显示采集画面、消息区、会话标题区域、识别框和 OCR 耗时。关闭调试窗口会同时关闭该开关。 |
 
-关系、模型、语言等普通设置保存在 `config.json`，通过原子替换保存。密钥保存在 Windows 当前用户环境变量中。当前会话、当前回复对象和“添加 @姓名”的选择仅保存在本次运行的内存中。分析配置发生变化后，历史结果立即失效，并重新分析聊天客户端当前会话中尚待回复的消息。
+关系、模型、语言等普通设置保存在 `config.json`，启动时加载为配置快照，通过原子替换保存。配置损坏或无法读取时，会显示具体错误。密钥保存在 Windows 当前用户环境变量中。当前会话、当前回复对象和“添加 @姓名”的选择仅保存在本次运行的内存中。分析配置发生变化后，历史结果立即失效，并重新分析聊天客户端当前会话中尚待回复的消息。
 
 ## 工作原理与 API 用量
 
@@ -179,8 +192,8 @@ Gemini 明确拒绝关闭思考时，程序会省略该配置并重试一次。�
 正常调用流程如下：
 
 1. 自动分析：向判断服务提交一次请求，获取意图、语气和紧张度评分。
-2. 按需起草：点击“生成回复”后，向起草服务请求候选；候选不足时，程序会再请求一次补充。
-3. 候选排序：得到两条或三条候选时，向判断服务提交一次 `choice` 请求；仅有一条候选时直接展示。
+2. 按需起草：点击“生成回复”后，向起草服务提交一次请求，接受完整 JSON 数组中的最多三条候选，保留原始标点。
+3. 候选排序：得到两条或三条候选时，向判断服务提交一次 `choice` 请求；仅有一条候选时直接展示。排序失败时显示平级候选与提示。
 
 切换群聊分析对象也会触发判断请求。“获取模型”和实际 API 测试会访问对应服务。费用由所选服务和模型的计费规则决定。
 
@@ -212,7 +225,7 @@ Gemini 明确拒绝关闭思考时，程序会省略该配置并重试一次。�
 
 ## 从源码运行
 
-使用 Python 3.11 或 3.12。RapidOCR 1.4 系列依赖 Python 3.13 以下版本。
+使用 Python 3.12。RapidOCR 1.4 系列依赖 Python 3.13 以下版本。
 
 ```powershell
 git clone https://github.com/Speechlessmanbilibili/jev-chat-windows.git
@@ -242,7 +255,7 @@ python -X utf8 -m venv .venv
 .\jev-chat-windows.exe --preview-ui --state ready
 ```
 
-使用合成对话进行实际 API 测试，需要配置判断密钥，会产生 API 用量：
+使用合成对话进行实际 API 测试，调用当前配置的判断来源；云端来源需配置判断密钥：
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m tools.demo --cases
@@ -252,20 +265,14 @@ python -X utf8 -m venv .venv
 
 ## 打包
 
-在 Windows 中安装依赖后执行：
+在 Windows 中安装固定版本依赖后，统一执行构建脚本。脚本先运行测试，再编译并生成完整 ZIP，结果位于 `dist/local-v版本号-时间/`：
 
 ```powershell
-.\.venv\Scripts\python.exe -X utf8 -m pip install pyinstaller
-.\.venv\Scripts\python.exe -X utf8 -m PyInstaller --noconfirm --clean jev.spec
-```
-
-构建结果位于 `dist/jev-chat-windows/`。分发时应包含整个目录，以及 `LICENSE`、`NOTICE` 和本 README。仓库中的 GitHub Actions 工作流也提供 Windows 构建。
-
-本机生成完整发布包可使用 `tools/build_release.ps1`。脚本先运行测试，再编译并打包，结果保存在 `dist/local-v版本号-时间/` 中：
-
-```powershell
+.\.venv\Scripts\python.exe -X utf8 -m pip install pyinstaller==6.22.3
 .\tools\build_release.ps1
 ```
+
+`build.bat` 和 GitHub Actions 调用同一构建入口。分发时保留完整 onedir 目录及随包文档。
 
 ## 项目结构
 
@@ -282,7 +289,6 @@ python -X utf8 -m venv .venv
 | `core/engine.py` | 判断、起草和排序的调用流程 |
 | `tests/` | 接口契约、密钥隔离和引擎集成测试 |
 | `tools/` | 合成数据预览、API 测试及本地发布包构建 |
-| `probe/` | 上游保留的窗口采集、OCR 和模型实验脚本 |
 | `docs/` | 界面示例、韩语识别说明和 Release 说明 |
 
 ## 许可证与致谢

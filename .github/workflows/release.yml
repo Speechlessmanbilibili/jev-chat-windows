@@ -23,39 +23,23 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: '3.12'
           cache: pip
 
       - name: 装依赖
-        run: python -X utf8 -m pip install -r requirements.txt pyinstaller
+        run: python -X utf8 -m pip install -r requirements.txt pyinstaller==6.22.3
 
-      - name: 验证接口与密钥隔离
-        run: python -X utf8 -m unittest discover -s tests -v
-
-      - name: 打包
-        run: python -X utf8 -m PyInstaller --noconfirm --clean jev.spec
-
-      - name: 压 zip（tag 用 tag 名，手动触发用短 SHA）
+      - name: 测试并打包
         id: pack
         shell: pwsh
-        run: |
-          $exe = 'dist\jev-chat-windows\jev-chat-windows.exe'
-          if (-not (Test-Path $exe)) { throw "exe 没生成：$exe" }
-          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { $env:GITHUB_SHA.Substring(0, 7) }
-          $zip = "jev-chat-windows-$ver.zip"
-          Copy-Item -Path LICENSE, NOTICE, README.md -Destination 'dist\jev-chat-windows'
-          New-Item -ItemType Directory -Path 'dist\jev-chat-windows\docs' -Force | Out-Null
-          Copy-Item -Path docs/ui_intent.png, docs/ui_openai_models.png -Destination 'dist\jev-chat-windows\docs'
-          Compress-Archive -Path 'dist\jev-chat-windows' -DestinationPath $zip
-          Add-Content -Path $env:GITHUB_OUTPUT -Value "zip=$zip"
-          "{0}  {1:N1} MB" -f $zip, ((Get-Item $zip).Length / 1MB)
+        run: ./tools/build_release.ps1 -PythonExecutable (Get-Command python).Source
 
       - name: 上传构建产物
         if: always()  # 失败时也把已经有的东西捞上来
         uses: actions/upload-artifact@v4
         with:
           name: jev-chat-windows
-          path: '*.zip'
+          path: ${{ steps.pack.outputs.zip }}
           if-no-files-found: warn
 
       - name: 发 Release

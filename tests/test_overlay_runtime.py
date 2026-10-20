@@ -64,9 +64,17 @@ class OverlayRuntimeTests(unittest.TestCase):
         self.assertFalse(self.overlay.generateButton.isEnabled())
         self.overlay.cards[0].fillButton.click()
         self.fill.assert_not_called()
+        self.overlay.cards[0].copyButton.click()
+        self.assertEqual(self.overlay.app.clipboard().text(), 'B')
         main.q.put(('chat', '乙'))
         main.tick()
         self.overlay.draftToggle.click()
         self.assertTrue(self.overlay.cards[0].fillButton.isEnabled())
         self.overlay.cards[0].fillButton.click()
         self.fill.assert_called_once_with('B')
+
+    def test_unranked_candidates_are_equal_and_keep_punctuation(self):
+        self.overlay.show({'answers': {}, 'candidates': ['八点到。', '晚安～'],
+                           'best_index': None, 'scores': [None, None]})
+        self.assertEqual([card.accent for card in self.overlay.cards], [False, False])
+        self.assertEqual([card.text.text() for card in self.overlay.cards], ['八点到。', '晚安～'])

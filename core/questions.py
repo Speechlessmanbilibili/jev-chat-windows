@@ -1,9 +1,4 @@
 """判断题、上下文整理和回复排序题。"""
-try:
-    from .intent import INTENT_QUESTIONS as JUDGE_QUESTIONS, guidance_text
-except ImportError:
-    from intent import INTENT_QUESTIONS as JUDGE_QUESTIONS, guidance_text
-
 
 def build_state(messages: list, relationship: str, keep: int = 10,
                 reply_to: str | None = None) -> dict:

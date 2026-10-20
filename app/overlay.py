@@ -1,290 +1,20 @@
 # -*- coding: utf-8 -*-
 """浅色置顶回复助手：回复建议和独立设置页。发送始终由用户确认。"""
-import os
-import sys
-import threading
 from datetime import datetime
 from math import isfinite
-from types import SimpleNamespace
-
-from PySide6.QtCore import QObject, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
-from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QPushButton, QProgressBar, QSizeGrip, QSizePolicy,
-    QStackedWidget, QVBoxLayout, QWidget,
-)
-from qfluentwidgets import (
-    BodyLabel, CardWidget, CheckBox, ComboBox, EditableComboBox, FluentIcon as FIF,
-    HyperlinkButton, IndeterminateProgressBar, LineEdit, PasswordLineEdit, PlainTextEdit,
-    PrimaryPushButton, PushButton, ScrollArea, SpinBox, SwitchButton, Theme, TransparentToolButton,
-    setCustomStyleSheet, setFont, setTheme, setThemeColor,
-)
-
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
+from qfluentwidgets import CheckBox, FluentIcon as FIF, HyperlinkButton, IndeterminateProgressBar, PlainTextEdit, PrimaryPushButton, PushButton, ScrollArea, SwitchButton, Theme, TransparentToolButton, setCustomStyleSheet, setTheme, setThemeColor
 from app import i18n, settings
 from app.version import VERSION
-from core import jev_client, llm, providers
+from core import jev_client
 from core.intent import ratings
-from app.i18n import LANGUAGES, T, bind
+from app.i18n import T, bind
+from app.widgets import _MUTED, _GREEN, _FitCombo, _label, _tlabel, _tool, _Surface, _TitleBar, _MainWindow, _ReplyCard, _RatingsPanel
+from app.settings_panel import SettingsPanel
 
 _LOG_LINES = 300
-_MUTED = "#68776f"
-_GREEN = "#18794e"
-_RELATIONSHIPS = [
-    ("恋人", "romantic partners"), ("朋友", "friends"), ("同事", "colleagues"),
-    ("家人", "family"), ("自定义", None),
-]
-
-
-def _mp_banner_path() -> str:
-    """打包后在 _MEIPASS/docs，源码跑在仓库 docs/。"""
-    root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    return os.path.join(root, "docs", "wechat-mp.png")
-
-
-class _MpBanner(QLabel):
-    """公众号长条横幅，宽度跟着设置页走，高度按原图比例。"""
-
-    def __init__(self, path, parent=None):
-        super().__init__(parent)
-        self._src = QPixmap(path)
-        self._shown = 0
-        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-
-    def hasHeightForWidth(self):
-        return True
-
-    def heightForWidth(self, w):
-        if self._src.isNull() or w <= 0 or self._src.width() <= 0:
-            return 0
-        return max(1, round(w * self._src.height() / self._src.width()))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        w = self.width()
-        if w <= 0 or w == self._shown or self._src.isNull():
-            return
-        h = self.heightForWidth(w)
-        self._shown = w
-        self.setPixmap(self._src.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        if self.height() != h:
-            self.setFixedHeight(h)
-
-
-class _FitCombo(ComboBox):
-    """长名字不撑开窄布局。按钮上按当前宽度省略；条目仍是全文，findText 靠它。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._full = ""
-        self.setMinimumWidth(0)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-
-    def setText(self, text):
-        self._full = text or ""
-        QPushButton.setText(self, self._elide(self._full))
-        self.setToolTip(self._full if self.text() != self._full else "")
-
-    def setPlaceholderText(self, text):
-        index = self.currentIndex()
-        super().setPlaceholderText(text)
-        # Fluent ComboBox 会连第 0 项一起覆盖；重译占位文案时保留当前会话。
-        if index >= 0:
-            self.setCurrentIndex(index)
-            self.setText(self.itemText(index))
-
-    def minimumSizeHint(self):
-        hint = QPushButton.minimumSizeHint(self)
-        return QSize(48, hint.height())
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        shown = self._elide(self._full)
-        if shown != self.text():
-            QPushButton.setText(self, shown)
-        self.setToolTip(self._full if shown != self._full else "")
-
-    def _elide(self, text):
-        # 右侧箭头大约 28px。还没排上版时先按一个窄宽度省略，避免最小宽度被整句名字撑开。
-        avail = self.width() - 36 if self.width() > 64 else 120
-        return self.fontMetrics().elidedText(text, Qt.ElideRight, max(24, avail))
-
-
-def _label(text="", size=14, color=None, bold=False, parent=None):
-    label = BodyLabel(text, parent)
-    label.setTextFormat(Qt.PlainText)
-    label.setWordWrap(True)
-    label.setMinimumWidth(0)
-    label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-    setFont(label, size, QFont.DemiBold if bold else QFont.Normal)
-    if color:
-        qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
-        setCustomStyleSheet(label, qss, qss)
-    return label
-
-
-def _tlabel(source, *args, **kwargs):
-    return bind(_label("", *args, **kwargs), source)
-
-
-def _tool(icon, title, callback, parent=None):
-    button = TransparentToolButton(icon, parent)
-    button.setFixedSize(32, 32)
-    bind(button, title, "setToolTip")
-    bind(button, title, "setAccessibleName")
-    button.clicked.connect(callback)
-    return button
-
-
-class _Surface(CardWidget):
-    def __init__(self, parent=None, accent=False):
-        self.accent = accent
-        super().__init__(parent)
-        self.setBorderRadius(12)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-
-    def _normalBackgroundColor(self):
-        return QColor("#edf7f0" if self.accent else "#ffffff")
-
-    def _hoverBackgroundColor(self):
-        return self._normalBackgroundColor()
-
-    def _pressedBackgroundColor(self):
-        return self._normalBackgroundColor()
-
-
-class _Fetched(QObject):
-    """取模型列表的后台线程 → 主线程：控件组、请求版本号、模型 id、失败原因。
-    Qt 不让跨线程碰控件，信号是跨线程唯一干净的路。"""
-    done = Signal(object, int, list, str)
-
-
-class _TitleBar(QWidget):
-    """只有标题栏可拖动，选择正文或按按钮不会意外移动窗口。"""
-    def __init__(self, parent):
-        super().__init__(parent)
-        self._drag = None
-
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._drag = event.globalPosition().toPoint() - self.window().pos()
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event):
-        if self._drag is not None and event.buttons() & Qt.LeftButton:
-            self.window().move(event.globalPosition().toPoint() - self._drag)
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event):
-        self._drag = None
-        super().mouseReleaseEvent(event)
-
-
-class _MainWindow(QWidget):
-    """窗口大小变了就叫 Overlay 重新排布；断点没跨过时 _relayout 自己不做事，这里不用防抖。"""
-    def __init__(self, relayout):
-        super().__init__()
-        self._relayout = relayout
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._relayout(event.size().width(), event.size().height())
-
-
-class _ReplyCard(_Surface):
-    def __init__(self, owner, index, recommended=False, number=1, score=None):
-        super().__init__(accent=recommended)
-        box = QVBoxLayout(self)
-        self.box = box
-        box.setSpacing(10)
-        top = QHBoxLayout()
-        title = lambda: T("推荐回复") if recommended else f"{T('备选')} {number}"
-        top.addWidget(_tlabel(lambda: title() + (f" · {round(score * 100)}%" if score is not None else ""),
-                             12, _GREEN if recommended else _MUTED, True))
-        self.copyButton = _tool(FIF.COPY, "复制这条回复", lambda: owner._copy(index), self)
-        self.copyButton.setFixedSize(24, 24)
-        top.addWidget(self.copyButton)
-        box.addLayout(top)
-        self.text = _label(owner.cands[index], 15)
-        self.text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        box.addWidget(self.text)
-        bottom = QHBoxLayout()
-        bottom.addStretch(1)
-        self.fillButton = bind((PrimaryPushButton if recommended else PushButton)("", self), "填入")
-        bind(self.fillButton, lambda: T("填入 {reply}").format(reply=title()), "setAccessibleName")
-        self.fillButton.clicked.connect(lambda: owner._fill(index))
-        bottom.addWidget(self.fillButton)
-        box.addLayout(bottom)
-        self.set_compact(owner._compact)
-
-    def set_available(self, enabled):
-        self.fillButton.setEnabled(enabled)
-        self.copyButton.setEnabled(enabled)
-
-    def set_compact(self, compact):
-        self.box.setContentsMargins(12, 8, 12, 8) if compact else self.box.setContentsMargins(16, 12, 16, 12)
-        self.fillButton.setMinimumWidth(80 if compact else 100)
-
-
-class _RatingsPanel(_Surface):
-    """独立排序的程度分数面板，默认展示前四项。"""
-    def __init__(self, title, kind, color):
-        super().__init__()
-        self.kind, self.color = kind, color
-        self.expanded = False
-        self.values = []
-        self.rows = []
-        box = QVBoxLayout(self)
-        box.setContentsMargins(14, 10, 14, 10)
-        box.setSpacing(6)
-        heading = QHBoxLayout()
-        heading.addWidget(_tlabel(title, 14, "#304c3c", True), 1)
-        self.toggle = bind(PushButton(""), "展开全部")
-        self.toggle.clicked.connect(self._toggle)
-        heading.addWidget(self.toggle)
-        box.addLayout(heading)
-        self.items = QVBoxLayout()
-        self.items.setSpacing(6)
-        box.addLayout(self.items)
-
-    def _toggle(self):
-        self.expanded = not self.expanded
-        self.render()
-
-    def update_answers(self, answers):
-        self.values = ratings(answers, self.kind)
-        self.render()
-
-    def render(self):
-        for widget in self.rows:
-            self.items.removeWidget(widget)
-            widget.hide()
-            widget.deleteLater()
-        self.rows = []
-        for label, value in self.values if self.expanded else self.values[:4]:
-            widget = QWidget()
-            box = QVBoxLayout(widget)
-            box.setContentsMargins(0, 0, 0, 0)
-            box.setSpacing(3)
-            line = QHBoxLayout()
-            line.addWidget(_tlabel(label, 12), 1)
-            line.addWidget(_label(f"{value}%" if value is not None else "—", 12, self.color))
-            box.addLayout(line)
-            bar = QProgressBar()
-            bar.setRange(0, 100)
-            bar.setValue(value or 0)
-            bar.setTextVisible(False)
-            bar.setFixedHeight(4)
-            bar.setStyleSheet(f"QProgressBar {{border:0; background:#e5ebe7; border-radius:2px;}}"
-                             f"QProgressBar::chunk {{background:{self.color}; border-radius:2px;}}")
-            bind(bar, lambda label=label, value=value:
-                 f"{T(label)} {value}%" if value is not None else f"{T(label)} —", "setAccessibleName")
-            box.addWidget(bar)
-            self.items.addWidget(widget)
-            self.rows.append(widget)
-        bind(self.toggle, "收起" if self.expanded else "展开全部")
-
-
-class Overlay:
+class Overlay(SettingsPanel):
     def __init__(self, on_fill, on_toggle_capture=None, on_target_change=None, result_of=None,
                  on_toggle_debug=None, on_language_changed=None, on_generate=None,
                  on_analysis_settings_changed=None):
@@ -292,6 +22,7 @@ class Overlay:
         on_target_change(会话名, 人名) → 用户在群里挑了回复对象。
         on_toggle_debug(开不开) → 开关调试视图那个独立窗口。"""
         self.app = QApplication.instance() or QApplication([])
+        i18n.reload()
         setTheme(Theme.LIGHT)
         setThemeColor(_GREEN, save=False)
         self.on_fill = on_fill
@@ -388,8 +119,8 @@ class Overlay:
         self.win.resize(min(440, screen.width() - 32), min(820, screen.height() - 48))
         self.win.move(screen.right() - self.win.width() - 20, screen.top() + 24)
         self._relayout(self.win.width(), self.win.height())  # resizeEvent 补不到构造时这一次
-        self.set_status("等待新消息" if settings.has_key() else "需要配置模型",
-                        "idle" if settings.has_key() else "warning")
+        self.set_status("等待新消息" if settings.analysis_ready() else "需要配置模型",
+                        "idle" if settings.analysis_ready() else "warning")
         self.win.show()
 
     def _scroll_page(self):
@@ -532,9 +263,9 @@ class Overlay:
         empty_box.addWidget(self.emptyHint)
         self.setupButton = bind(PrimaryPushButton(""), "前往设置")
         self.setupButton.clicked.connect(self.open_settings)
-        self.setupButton.setVisible(not settings.has_key())
+        self.setupButton.setVisible(not settings.analysis_ready())
         empty_box.addWidget(self.setupButton, 0, Qt.AlignHCenter)
-        if not settings.has_key():
+        if not settings.analysis_ready():
             bind(self.emptyTitle, "先设置一下", "setText")
             bind(self.emptyHint, "设置关系背景和分析模型，就可以开始。\n需要回复建议时，再配置回复模型。", "setText")
         body.addWidget(self.empty)
@@ -573,472 +304,6 @@ class Overlay:
         self._history_title()
         body.addStretch(1)
 
-    def _build_settings(self):
-        self.settingsPage, body = self._scroll_page()
-        heading = QHBoxLayout()
-        heading.addWidget(_tool(FIF.RETURN, "返回意图分析", self._back_home))
-        heading.addWidget(_tlabel("设置", 23, "#24382d", True), 1)
-        body.addLayout(heading)
-        banner = _mp_banner_path()
-        if os.path.exists(banner):
-            body.addWidget(_MpBanner(banner))
-
-        language = _Surface()
-        box = QVBoxLayout(language)
-        box.setContentsMargins(16, 16, 16, 18)
-        box.setSpacing(12)
-        language_label = _tlabel("界面语言 / Language", 16, "#304c3c", True)
-        box.addWidget(language_label)
-        self.languageBox = ComboBox()
-        self.languageBox.setMinimumWidth(0)
-        self.languageBox.addItems([name for name, code in LANGUAGES])
-        bind(self.languageBox, "界面语言 / Language", "setAccessibleName")
-        language_label.setBuddy(self.languageBox)
-        self.languageBox.currentIndexChanged.connect(self._language_changed)
-        box.addWidget(self.languageBox)
-        self.languageHint = _label("", 12, _MUTED)
-        box.addWidget(self.languageHint)
-        self.languageOverrideHint = _tlabel("本次选择立即生效；下次启动仍优先使用 JEVCHAT_LANG 指定的语言。", 12, _MUTED)
-        box.addWidget(self.languageOverrideHint)
-        body.addWidget(language)
-
-        body.addWidget(_tlabel("设置关系背景和模型，让分析和回复更贴近你们的对话。", 13, _MUTED))
-        preference = _Surface()
-        box = QVBoxLayout(preference)
-        box.setContentsMargins(16, 16, 16, 18)
-        box.setSpacing(12)
-        box.addWidget(_tlabel("回复偏好", 16, "#304c3c", True))
-        relation_label = _tlabel("关系背景", 13)
-        box.addWidget(relation_label)
-        self.relationshipBox = ComboBox()
-        self.relationshipBox.setMinimumWidth(0)
-        self.relationshipBox.addItems([T(name) for name, value in _RELATIONSHIPS])
-        bind(self.relationshipBox, "关系背景", "setAccessibleName")
-        relation_label.setBuddy(self.relationshipBox)
-        box.addWidget(self.relationshipBox)
-        self.relEdit = LineEdit()
-        bind(self.relEdit, "例如：刚认识的朋友，还不太熟悉", "setPlaceholderText")
-        bind(self.relEdit, "自定义关系背景", "setAccessibleName")
-        box.addWidget(self.relEdit)
-        self.relationshipBox.currentIndexChanged.connect(
-            lambda index: self.relEdit.setVisible(_RELATIONSHIPS[index][1] is None)
-        )
-        box.addWidget(self._hint("简单说明你们的关系，帮助调整称呼和回复语气。"))
-        style_label = _tlabel("说话风格（可选）", 13)
-        box.addWidget(style_label)
-        self.styleEdit = LineEdit()
-        bind(self.styleEdit, "例如：简短自然，少用表情，不说客套话", "setPlaceholderText")
-        bind(self.styleEdit, "说话风格", "setAccessibleName")
-        style_label.setBuddy(self.styleEdit)
-        box.addWidget(self.styleEdit)
-        box.addWidget(self._hint("会参考你最近的消息来写，也可以在这里补充你的说话习惯。"))
-        context_label = _tlabel("上下文消息数", 13)
-        box.addWidget(context_label)
-        self.contextBox = SpinBox()
-        self.contextBox.setRange(3, 30)
-        bind(self.contextBox, "参考的最近消息条数", "setAccessibleName")
-        context_label.setBuddy(self.contextBox)
-        box.addWidget(self.contextBox)
-        box.addWidget(self._hint(
-            "分析和生成回复时，参考最近的 3～30 条消息。"
-        ))
-        target_row = QHBoxLayout()
-        target_row.addWidget(_tlabel("群聊指定回复对象", 13), 1)
-        self.targetSwitch = SwitchButton()
-        bind(self.targetSwitch, "开启", "setOnText")
-        bind(self.targetSwitch, "关闭", "setOffText")
-        bind(self.targetSwitch, "群聊指定回复对象", "setAccessibleName")
-        target_row.addWidget(self.targetSwitch)
-        box.addLayout(target_row)
-        box.addWidget(self._hint(
-            "开启后，可以选择群聊中要分析和回复的人；关闭时跟随最新发言。"
-        ))
-        update_row = QHBoxLayout()
-        update_row.addWidget(_tlabel("启动时检查更新", 13), 1)
-        self.updateSwitch = SwitchButton()
-        bind(self.updateSwitch, "开启", "setOnText")
-        bind(self.updateSwitch, "关闭", "setOffText")
-        bind(self.updateSwitch, "启动时检查更新", "setAccessibleName")
-        update_row.addWidget(self.updateSwitch)
-        box.addLayout(update_row)
-        box.addWidget(self._hint(
-            "启动时查询 GitHub 上的最新版本，不提交聊天内容。"
-        ))
-        debug_row = QHBoxLayout()
-        debug_row.addWidget(_tlabel("调试视图", 13), 1)
-        self.debugSwitch = SwitchButton()
-        bind(self.debugSwitch, "开启", "setOnText")
-        bind(self.debugSwitch, "关闭", "setOffText")
-        bind(self.debugSwitch, "调试视图", "setAccessibleName")
-        self.debugSwitch.checkedChanged.connect(self._debug_toggled)  # 这个开关立刻生效，不等「保存设置」
-        debug_row.addWidget(self.debugSwitch)
-        box.addLayout(debug_row)
-        box.addWidget(self._hint(
-            "在独立窗口中显示采集画面、文字识别框及处理状态。画面仅在内存中显示。"
-        ))
-        body.addWidget(preference)
-
-        models = _Surface()
-        box = QVBoxLayout(models)
-        box.setContentsMargins(16, 16, 16, 18)
-        box.setSpacing(12)
-        box.addWidget(_tlabel("模型", 16, "#304c3c", True))
-        self._fetched = _Fetched()
-        self._fetched.done.connect(self._models_fetched)
-        self.jev = self._model_group(box, "分析模型", "jev", providers.JEV_PROVIDERS)
-        box.addWidget(self._hint(
-            "分析意图、语气和紧张度，并为回复建议排序。"
-        ))
-        draft_settings_toggle = bind(PushButton(""), "回复起草设置（可选）")
-        self.draftSettings = QWidget()
-        draft_settings_toggle.clicked.connect(lambda: self.draftSettings.setVisible(self.draftSettings.isHidden()))
-        box.addWidget(draft_settings_toggle)
-        draft_settings_box = QVBoxLayout(self.draftSettings)
-        draft_settings_box.setContentsMargins(0, 0, 0, 0)
-        self.draft = self._model_group(draft_settings_box, "回复起草模型", "draft", providers.DRAFT_PROVIDERS)
-        draft_settings_box.addWidget(self._hint(
-            "生成回复建议，使用单独的 API 密钥。"
-        ))
-        think_row = QHBoxLayout()
-        think_row.addWidget(_tlabel("起草时开启思考模式", 13), 1)
-        self.thinkingSwitch = SwitchButton()
-        bind(self.thinkingSwitch, "开启", "setOnText")
-        bind(self.thinkingSwitch, "关闭", "setOffText")
-        bind(self.thinkingSwitch, "起草时开启思考模式", "setAccessibleName")
-        think_row.addWidget(self.thinkingSwitch)
-        draft_settings_box.addLayout(think_row)
-        draft_settings_box.addWidget(self._hint(
-            lambda: T("开启后，模型会先思考再生成回复，耗时和费用可能增加。支持：{providers}。")
-            .format(providers=" / ".join(providers.THINKING))
-        ))
-        box.addWidget(self.draftSettings)
-        self.draftSettings.hide()
-        body.addWidget(models)
-        self.settingsFeedback = _label("", 13, _GREEN)
-        self.settingsFeedback.hide()
-        body.addWidget(self.settingsFeedback)
-        actions = QHBoxLayout()
-        back = bind(PushButton(""), "返回")
-        back.clicked.connect(self._back_home)
-        actions.addWidget(back)
-        actions.addStretch(1)
-        self.saveButton = bind(PrimaryPushButton(""), "保存设置")
-        self.saveButton.clicked.connect(self._save)
-        actions.addWidget(self.saveButton)
-        body.addLayout(actions)
-        body.addWidget(self._hint("保存后会更新分析，回复设置在下次生成时生效。"))
-        body.addStretch(1)
-        self._load_settings()
-
-    def _hint(self, text):
-        """设置页字段下面的灰字说明：记下来，紧凑模式一起隐藏。"""
-        label = _tlabel(text, 12, _MUTED)
-        self._hintLabels.append(label)
-        return label
-
-    def _model_group(self, box, title, kind, table):
-        """一组「来源 / 密钥 / 模型」控件，判断和起草各一份。table 是 core/providers.py 里那张表。"""
-        group = SimpleNamespace(kind=kind, table=table, ids=list(table),
-                                keyTitle="分析" if kind == "jev" else "起草",
-                                stored_key=lambda: "", fetch_revision=0)
-        heading = QHBoxLayout()
-        heading.addWidget(_tlabel(title, 14, "#304c3c", True), 1)
-        group.keyState = _label("", 12, _GREEN)
-        group.keyState.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        heading.addWidget(group.keyState)
-        box.addLayout(heading)
-        source_label = _tlabel("来源", 13)
-        box.addWidget(source_label)
-        group.providerBox = ComboBox()
-        group.providerBox.setMinimumWidth(0)  # 选项文字长短不一，别让它撑开设置页
-        group.providerBox.addItems([T(table[i].name) for i in group.ids])
-        bind(group.providerBox, lambda: f"{T(title)} · {T('来源')}", "setAccessibleName")
-        source_label.setBuddy(group.providerBox)
-        box.addWidget(group.providerBox)
-        if kind == "draft":  # 只有两个「自定义」来源要自己填地址，别的来源这一行藏着
-            self.baseLabel = _label("Base URL", 13)
-            box.addWidget(self.baseLabel)
-            self.baseEdit = LineEdit()
-            bind(self.baseEdit, "https://example.com/v1", "setPlaceholderText")
-            bind(self.baseEdit, "自定义来源 Base URL", "setAccessibleName")
-            self.baseLabel.setBuddy(self.baseEdit)
-            box.addWidget(self.baseEdit)
-        key_label = _tlabel("密钥", 13)
-        box.addWidget(key_label)
-        group.keyEdit = PasswordLineEdit()
-        bind(group.keyEdit, lambda: f"{T(title)} · {T('密钥')}", "setAccessibleName")
-        key_label.setBuddy(group.keyEdit)
-        group.keyEdit.returnPressed.connect(self._save)
-        box.addWidget(group.keyEdit)
-        box.addWidget(self._hint(
-            "OpenAI 分析使用 OPENAI_API_KEY，其他分析服务使用 JEV_API_KEY。可读取已配置的环境变量。" if kind == "jev"
-            else "起草 API 密钥保存至 LLM_API_KEY，与分析 API 密钥独立。"))
-        model_label = _tlabel("模型", 13)
-        box.addWidget(model_label)
-        row = QHBoxLayout()
-        row.setSpacing(8)
-        group.modelBox = EditableComboBox()  # 能选也能手打，接口新出的模型不用等我改代码
-        group.modelBox.setMinimumWidth(0)
-        bind(group.modelBox, lambda: f"{T(title)} · {T('模型')}", "setAccessibleName")
-        model_label.setBuddy(group.modelBox)
-        row.addWidget(group.modelBox, 1)
-        group.fetchButton = bind(PushButton(""), "获取模型")
-        bind(group.fetchButton, lambda: f"{T(title)} · {T('获取模型')}", "setAccessibleName")
-        group.fetchButton.clicked.connect(lambda: self._fetch_models(group))
-        row.addWidget(group.fetchButton)
-        box.addLayout(row)
-        group.status = _label("", 12, _MUTED)
-        box.addWidget(group.status)
-        group.providerBox.currentIndexChanged.connect(lambda _: self._provider_changed(group))
-        group.stored_key = lambda: (settings.jev_key(self._provider_of(group)) if kind == "jev"
-                                    else settings.llm_key(self._provider_of(group)))
-        return group
-
-    @staticmethod
-    def _provider_of(group):
-        return group.ids[max(0, group.providerBox.currentIndex())]
-
-    def _provider_changed(self, group):
-        """换来源：模型框回到这家该有的值（存的就是这家才用存的，否则用它的默认），状态清掉。"""
-        group.fetch_revision += 1
-        group.fetchButton.setEnabled(True)
-        provider = self._provider_of(group)
-        saved = settings.jev_provider() if group.kind == "jev" else settings.draft_provider()
-        stored = settings.jev_model() if group.kind == "jev" else settings.draft_model()
-        group.modelBox.clear()
-        group.keyEdit.clear()
-        group.modelBox.setText(stored if provider == saved else group.table[provider].default)
-        bind(group.status, "", "setText")
-        self._sync_model_fields()
-
-    def _sync_model_fields(self):
-        """两组共用：密钥已配置/未配置、占位文案、自定义 Base URL 行的显隐，
-        外加紧凑模式下把来源按钮上的文字省略——ComboBox 是 QPushButton，
-        minimumSizeHint 按整段文字算，不会自动换行/省略，长名字会把设置页撑宽。"""
-        for group in (self.jev, self.draft):
-            provider = self._provider_of(group)
-            name = T(group.table[provider].name)
-            configured = bool(group.stored_key())
-            bind(group.keyState, "已配置" if configured else "未配置")
-            bind(group.keyEdit, "已配置，留空可保留现有密钥" if configured else
-                 lambda name=name: T("输入 {name} API 密钥").format(name=name), "setPlaceholderText")
-            if self._compact:
-                name = group.providerBox.fontMetrics().elidedText(name, Qt.ElideRight, 180)
-            group.providerBox.setText(name)
-        custom = self._provider_of(self.draft) in providers.CUSTOM
-        self.baseLabel.setVisible(custom)
-        self.baseEdit.setVisible(custom)
-
-    def _fetch_models(self, group):
-        """「获取模型」：拿填的 key（没填就拿存的）去问接口，网络调用丢后台线程。"""
-        provider = self._provider_of(group)
-        custom = group.kind == "draft" and provider in providers.CUSTOM
-        base = self.baseEdit.text().strip() if custom else None
-        key = group.keyEdit.text().strip() or group.stored_key()
-        if not key:
-            bind(group.status, "请先输入 API 密钥。", "setText")
-            return
-        if custom and not base:
-            bind(group.status, "请先填写服务地址。", "setText")
-            return
-        bind(group.status, "获取中…", "setText")
-        group.fetchButton.setEnabled(False)
-        group.fetch_revision += 1
-        revision = group.fetch_revision
-        threading.Thread(target=lambda: self._list_models(group, provider, key, base, revision),
-                         daemon=True).start()
-
-    def _list_models(self, group, provider, key, base, revision):
-        """后台线程：判断走 jev_client，起草按协议走 llm；失败把原因一起送回主线程。"""
-        try:
-            if group.kind == "jev":
-                models = jev_client.list_models(provider, key)
-            else:
-                spec = providers.DRAFT_PROVIDERS[provider]
-                models = llm.list_models(spec.protocol, base or spec.base, key, headers=spec.headers)
-                if spec.keep:  # 目录里混了别的协议时，只留这条路打得通的
-                    models = [m for m in models if spec.keep(m)]
-            reason = "" if models else "所选服务未返回可用模型。"
-        except Exception as exc:  # 线程里漏异常会静默吞掉，按钮就永远停在禁用态
-            # 新填的密钥尚未进入环境变量，也要在截断错误文本前完整脱敏。
-            models, reason = [], jev_client.redact_secrets(str(exc), key)[:120]
-        self._fetched.done.emit(group, revision, models, reason)
-
-    def _models_fetched(self, group, revision, models, reason):
-        """回到主线程：填进下拉框，原来选中的还在列表里就留着。"""
-        if revision != group.fetch_revision:
-            return
-        group.fetchButton.setEnabled(True)
-        if not models:
-            bind(group.status, reason or "模型列表获取失败，请检查 API 密钥、网络及服务地址。")
-            return
-        current = group.modelBox.text().strip()
-        group.modelBox.clear()
-        group.modelBox.addItems(models)
-        if current in models:
-            group.modelBox.setCurrentIndex(models.index(current))
-        else:
-            group.modelBox.setText(current)  # 手打的没在列表里也不清掉
-        bind(group.status, lambda: T("共 {count} 个").format(count=len(models)))
-
-    def _set_group(self, group, provider, model):
-        """把存下来的来源和模型放回一组控件里；填充不算用户操作，别触发换来源的重置。"""
-        group.fetch_revision += 1
-        group.fetchButton.setEnabled(True)
-        group.providerBox.blockSignals(True)
-        group.providerBox.setCurrentIndex(group.ids.index(provider))
-        group.providerBox.blockSignals(False)
-        group.keyEdit.clear()
-        group.modelBox.clear()
-        group.modelBox.setText(model)
-        bind(group.status, "", "setText")
-
-    def _load_language(self):
-        lang = i18n.language()
-        index = next((i for i, (_, code) in enumerate(LANGUAGES) if code == lang), 0)
-        self.languageBox.blockSignals(True)
-        self.languageBox.setCurrentIndex(index)
-        self.languageBox.blockSignals(False)
-        bind(self.languageHint, "选择后立即生效，并自动保存。", "setText")
-        self.languageOverrideHint.setVisible(bool(os.environ.get("JEVCHAT_LANG", "").strip()))
-
-    def _language_changed(self, index):
-        if not 0 <= index < len(LANGUAGES):
-            return
-        try:
-            settings.save(lang_text=LANGUAGES[index][1])
-        except Exception:
-            self._load_language()
-            bind(self.languageHint, "语言保存失败，请检查配置文件是否可写后重试。", "setText")
-            return
-        i18n.reload(LANGUAGES[index][1])
-        self._retranslate()
-        bind(self.languageHint, "语言已切换并保存。", "setText")
-        if self.on_language_changed:
-            self.on_language_changed()
-
-    def _retranslate(self):
-        """只重画文字，保留输入、控件状态和进行中的模型请求。"""
-        i18n.retranslate(self.win)
-        blocked = self.relationshipBox.blockSignals(True)
-        for index, (name, _) in enumerate(_RELATIONSHIPS):
-            self.relationshipBox.setItemText(index, T(name))
-        self.relationshipBox.blockSignals(blocked)
-        for group in (self.jev, self.draft):
-            blocked = group.providerBox.blockSignals(True)
-            for index, provider in enumerate(group.ids):
-                group.providerBox.setItemText(index, T(group.table[provider].name))
-            group.providerBox.blockSignals(blocked)
-        self._sync_model_fields()
-        self._refresh_history_text()
-
-    def _load_settings(self):
-        self._load_language()
-        relationship = settings.relationship()
-        index = next((i for i, (_, value) in enumerate(_RELATIONSHIPS) if value == relationship),
-                     len(_RELATIONSHIPS) - 1)
-        self.relationshipBox.setCurrentIndex(index)
-        self.relEdit.setText(relationship if _RELATIONSHIPS[index][1] is None else "")
-        self.relEdit.setVisible(_RELATIONSHIPS[index][1] is None)
-        self.styleEdit.setText(settings.style())
-        self.contextBox.setValue(settings.context())
-        self.targetSwitch.setChecked(settings.reply_target())
-        self._set_group(self.jev, settings.jev_provider(), settings.jev_model())
-        self._set_group(self.draft, settings.draft_provider(), settings.draft_model())
-        self.baseEdit.setText(settings.draft_base_url())
-        self.thinkingSwitch.setChecked(settings.thinking())
-        self.updateSwitch.setChecked(settings.check_update())
-        self.set_debug_switch(settings.debug_view())  # 屏蔽信号地拨，别在加载时开关一遍窗口
-        self._sync_model_fields()  # 上面屏蔽了信号，这里补一次
-        self.settingsFeedback.hide()
-
-    def _save(self):
-        previous_analysis = (settings.analysis_options(), settings.reply_target())
-        relationship = _RELATIONSHIPS[self.relationshipBox.currentIndex()][1]
-        relationship = relationship or self.relEdit.text().strip()
-        jev_provider = self._provider_of(self.jev)
-        draft_provider = self._provider_of(self.draft)
-        base = self.baseEdit.text().strip()
-        if not relationship:
-            self._settings_feedback("请填写关系背景，或选择一个已有选项。", error=True)
-            self.relEdit.setFocus()
-            return
-        for group, provider in ((self.jev, jev_provider),):
-            name = group.table[provider].name
-            if not group.keyEdit.text().strip() and not group.stored_key():
-                self._settings_feedback(lambda group=group:
-                                        T("请先填写 {name} 的 API 密钥。").format(name=T(group.keyTitle)), error=True)
-                group.keyEdit.setFocus()
-                return
-            if not group.modelBox.text().strip():
-                self._settings_feedback(lambda: T("请选择或输入 {name} 的模型名称。").format(name=name), error=True)
-                group.modelBox.setFocus()
-                return
-        try:
-            settings.save(relationship, self.contextBox.value(),
-                          jev_provider_text=jev_provider,
-                          jev_key_text=self.jev.keyEdit.text().strip() or None,
-                          jev_model_text=self.jev.modelBox.text().strip(),
-                          draft_provider_text=draft_provider,
-                          llm_key_text=self.draft.keyEdit.text().strip() or None,
-                          draft_model_text=self.draft.modelBox.text().strip(),
-                          draft_base_url_text=base,
-                          reply_target_on=self.targetSwitch.isChecked(),
-                          style_text=self.styleEdit.text().strip(),
-                          thinking_on=self.thinkingSwitch.isChecked(),
-                          check_update_on=self.updateSwitch.isChecked())
-        except Exception:
-            self._settings_feedback("设置保存失败，请检查配置文件写入权限及用户环境变量权限。", error=True)
-            return
-        self._load_settings()
-        self._render_targets()  # 开关刚改过，回到首页时这一行该显该藏得重算一次
-        self._settings_feedback("设置已保存。")
-        if (self.on_analysis_settings_changed
-                and previous_analysis != (settings.analysis_options(), settings.reply_target())):
-            self.on_analysis_settings_changed()
-        self.setupButton.hide()
-        if not self.cands and not self._busy:
-            self._empty_text()
-            self.set_status("准备就绪，等待新消息。", "idle")
-
-    def _debug_toggled(self, on):
-        """调试视图独立于「保存设置」：拨一下就开窗/收窗，顺手落盘，重启还在。"""
-        try:
-            settings.save(debug_view_on=on)
-        except Exception:
-            self.set_debug_switch(settings.debug_view())
-            self._settings_feedback("设置保存失败，请检查配置文件写入权限及用户环境变量权限。", error=True)
-            return
-        if self.on_toggle_debug:
-            self.on_toggle_debug(on)
-
-    def set_debug_switch(self, on):
-        """调试窗被用户直接关掉时把开关拨回去；屏蔽信号，免得又回调一圈。"""
-        self.debugSwitch.blockSignals(True)
-        self.debugSwitch.setChecked(on)
-        self.debugSwitch.blockSignals(False)
-
-    def _settings_feedback(self, text, error=False):
-        color = "#b44832" if error else _GREEN
-        qss = f"BodyLabel {{ color: {color}; background: transparent; }}"
-        setCustomStyleSheet(self.settingsFeedback, qss, qss)
-        bind(self.settingsFeedback, text)
-        self.settingsFeedback.show()
-
-    def open_settings(self):
-        if self.pages.currentWidget() != self.settingsPage:
-            self._load_settings()
-        self.pages.setCurrentWidget(self.settingsPage)
-        self.settingsButton.setEnabled(False)
-        self.languageBox.setFocus()
-        self.settingsPage.verticalScrollBar().setValue(0)
-
-    def _back_home(self):
-        self.jev.keyEdit.clear()
-        self.draft.keyEdit.clear()
-        self.pages.setCurrentWidget(self.home)
-        self.settingsButton.setEnabled(True)
-
     def _fill(self, index):
         if self._busy or not self._current or not 0 <= index < len(self.cands):
             return
@@ -1054,7 +319,7 @@ class Overlay:
         self.set_status("回复已填入，确认内容后手动发送。", "success")
 
     def _copy(self, index):
-        if self._busy or not self._current or not 0 <= index < len(self.cands):
+        if not 0 <= index < len(self.cands):
             return
         self.app.clipboard().setText(self.cands[index])
         self.set_status("回复已复制到剪贴板。", "success")
@@ -1080,7 +345,7 @@ class Overlay:
 
     def _capture_text(self, on, reason=""):
         """开关状态对应的状态行和空态文案。已有的候选不受影响，暂停了照样能填入/复制。"""
-        configured = settings.has_key()
+        configured = settings.analysis_ready()
         if not on:
             self.set_status(reason or "采集已暂停。", "warning")
         elif configured:
@@ -1117,7 +382,7 @@ class Overlay:
 
     def _empty_text(self):
         """空态卡片的默认文案，配好没配好两套说法。"""
-        configured = settings.has_key()
+        configured = settings.analysis_ready()
         bind(self.emptyTitle, "等待对方的新消息" if configured else "先设置一下")
         bind(self.emptyHint, "保持聊天窗口打开，\n收到新消息后会自动分析意图与语气。"
                             if configured else "设置关系背景和分析模型，就可以开始。\n需要回复建议时，再配置回复模型。")
@@ -1172,7 +437,7 @@ class Overlay:
         if kind == "error" and not self._result:
             bind(self.emptyTitle, "分析未完成", "setText")
             bind(self.emptyHint, "请按上方提示处理。收到新的对方消息后会再次尝试。", "setText")
-            self.setupButton.setVisible(not settings.has_key())
+            self.setupButton.setVisible(not settings.analysis_ready())
 
     def _toggle_history(self):
         self.feed.setVisible(self.feed.isHidden())
@@ -1360,9 +625,7 @@ class Overlay:
         self.set_busy(False)
         self._current = not result.get("stale", False) and self._shown == self._chat
         self._clear_cards()
-        best = result.get("best_index", 0)
-        if best not in range(len(self.cands)):
-            best = 0
+        best = result.get("best_index")
         raw_scores = result.get("scores") or []
         scores = [raw_scores[i] if i < len(raw_scores) else None for i in range(len(self.cands))]
         if not any(scores):  # 全 0/None（旧结果或接口未返回）就不展示百分比
@@ -1370,7 +633,7 @@ class Overlay:
         # 按概率降序排，推荐位（API 给的 choice）强制第一，同分按原索引
         order = sorted(range(len(self.cands)), key=lambda i: (i != best, -(scores[i] or 0), i))
         for position, index in enumerate(order):
-            card = _ReplyCard(self, index, recommended=index == best, number=position, score=scores[index])
+            card = _ReplyCard(self, index, recommended=index == best, number=position + 1, score=scores[index])
             self.replyBox.addWidget(card)
             self.cards.append(card)
         reply_to = result.get("reply_to")
