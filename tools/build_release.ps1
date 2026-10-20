@@ -34,6 +34,10 @@ try {
     $docsRoot = Join-Path $packageRoot 'docs'
     New-Item -ItemType Directory -Path $docsRoot | Out-Null
     Copy-Item -LiteralPath docs/ui_intent.png, docs/ui_openai_models.png, docs/ui_draft.png -Destination $docsRoot
+    Copy-Item -LiteralPath docs/KOREAN.md, docs/KOREAN.ko.md -Destination $docsRoot
+    $toolsRoot = Join-Path $packageRoot 'tools'
+    New-Item -ItemType Directory -Path $toolsRoot | Out-Null
+    Copy-Item -LiteralPath tools/lmstudio-d3-mini.defaults.json -Destination $toolsRoot
     $archivePath = Join-Path $outputRoot ('jev-chat-windows-v' + $releaseVersion + '.zip')
     Compress-Archive -LiteralPath $packageRoot -DestinationPath $archivePath
     Write-Output ('发布包：' + $archivePath)
